@@ -18,8 +18,7 @@ CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
 
 ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 $(INC)
 
-LIBPI_OBJS = \
-	libpi/start.o \
+LIBPI_COMMON = \
 	libpi/mem-barrier.o \
 	libpi/src/put-get8.o \
 	libpi/libc/putk.o \
@@ -35,8 +34,8 @@ LIBPI_OBJS = \
 	libpi/src/rpi-wait.o \
 	libpi/cstart.o
 
-APP_OBJS  = main.o $(LIBPI_OBJS)
-BOOT_OBJS = libpi/boot/boot-main.o $(LIBPI_OBJS)
+APP_OBJS  = main.o libpi/start.o $(LIBPI_COMMON)
+BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 
 DEPS     = $(MEMMAP) ./Makefile

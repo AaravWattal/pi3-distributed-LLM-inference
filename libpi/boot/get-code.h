@@ -195,6 +195,8 @@ static void wait_for_data(unsigned usec_timeout) {
 //
 // Simple bootloader: put all of your code here.
 uint32_t get_code(void) {
+    boot_putk("waiting for program...\r\n");
+
     // 0. keep sending GET_PROG_INFO every 300ms until 
     // there is data: implement this.
     wait_for_data(300 * 1000);

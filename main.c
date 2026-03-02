@@ -1,7 +1,7 @@
 #include "uart.h"
 
 void notmain(void) {
-    for (;;) {
+    for (int i = 0; i < 10; i++) {
         uart_put8('H');
         uart_put8('e');
         uart_put8('l');
