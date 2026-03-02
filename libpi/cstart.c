@@ -66,7 +66,7 @@ void _cstart() {
     // pretty common to hit this multiple times in the
     // quarter so we do it here so it can't be forgotten.
     // i don't think any downside.
-    cycle_cnt_init();
+    // cycle_cnt_init();
 
     // hack to catch errors where they write to the first
     // 4k of memory.

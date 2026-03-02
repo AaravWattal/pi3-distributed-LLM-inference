@@ -1,4 +1,7 @@
+arm_64bit=0
 kernel=kernel.img
 
 enable_uart=1
 dtoverlay=disable-bt
+core_freq=250
+core_freq_min=250

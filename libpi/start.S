@@ -11,10 +11,10 @@
 _start:
 
     @ force the mode to be SUPER.
-    mov r0,  #SUPER_MODE
-    orr r0,r0,#(1<<7)    @ disable interrupts.
-    msr cpsr, r0
-    prefetch_flush(r1)
+    @ mov r0,  #SUPER_MODE
+    @ orr r0,r0,#(1<<7)    @ disable interrupts.
+    @ msr cpsr, r0
+    @ prefetch_flush(r1)
 
     mov sp, #STACK_ADDR @ initialize stack pointer
     mov fp, #0          @ clear frame pointer reg.  don't think needed.

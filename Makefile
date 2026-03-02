@@ -11,9 +11,9 @@ INC    = -Ilibpi -Ilibpi/include
 OPT_LEVEL ?= -O2
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
             -fno-builtin -fno-stack-protector -fno-exceptions \
-            -marm -march=armv6zk -mfpu=vfp -mfloat-abi=hard -std=gnu99 $(INC)
+            -marm -mcpu=cortex-a53 -mfpu=vfp -mfloat-abi=hard -std=gnu99 $(INC)
 
-ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -march=armv6zk $(INC)
+ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 $(INC)
 
 LIBPI_OBJS = \
 	libpi/start.o \
