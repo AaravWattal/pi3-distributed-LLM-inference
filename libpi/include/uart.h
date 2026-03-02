@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 // initialize [XXX: we should take a baud rate?]
 void uart_init(void);
 // disable

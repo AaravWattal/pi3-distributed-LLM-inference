@@ -6,8 +6,8 @@ void rpi_reboot(void) {
     delay_ms(10);
 
     // is there a way to speed this up?
-    const int PM_RSTC = 0x2010001c;
-    const int PM_WDOG = 0x20100024;
+    const int PM_RSTC = 0x3F10001c;
+    const int PM_WDOG = 0x3F100024;
     const int PM_PASSWORD = 0x5a000000;
     const int PM_RSTC_WRCFG_FULL_RESET = 0x00000020;
 

@@ -24,7 +24,7 @@ enum {
     // Max gpio pin number.
     GPIO_MAX_PIN = 53,
 
-    GPIO_BASE = 0x20200000,
+    GPIO_BASE = 0x3F200000,
     gpio_set0  = (GPIO_BASE + 0x1C),
     gpio_clr0  = (GPIO_BASE + 0x28),
     gpio_lev0  = (GPIO_BASE + 0x34)
@@ -143,4 +143,10 @@ void gpio_set_function(unsigned pin, gpio_func_t func) {
     value |= func << (3 * (pin % 10));
 
     put32(addr, value);
+}
+
+// weird panic: we just infinite loop since we don't have 
+// printk in 2-gpio.
+void gpio_panic(const char *msg, ...) {
+    while(1);
 }

@@ -2,7 +2,7 @@
 
 // no dev barrier: 
 uint32_t timer_get_usec_raw(void) {
-    return GET32(0x20003004);
+    return GET32(0x3F003004);
 }
 
 // in usec.  the lower 32-bits of the usec 
