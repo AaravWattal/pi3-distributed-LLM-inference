@@ -1,4 +1,5 @@
 #include "rpi.h"
+#include "uart.h"
 #include "cycle-count.h"
 #include "memmap.h"
 // #include "redzone.h"
@@ -23,7 +24,7 @@ void *program_end(void) {
 // just zeroing out the bss section (where zero-initialized
 // static var and globals live).
 void _cstart() {
-	void notmain();
+	void main(void);
 
     // zero out the bss section.  if you look in the 
     // linker script <libpi/memmap> you can see where
@@ -71,8 +72,8 @@ void _cstart() {
     // 4k of memory.
 //    redzone_init();
 
-    // call user's <notmain> (should add argv)
-    notmain(); 
+    // call main
+    main(); 
 
     // if they return and don't exit, just reboot
 	clean_reboot();

@@ -1,4 +1,32 @@
+/*
+ * General functions we use.  These could be broken into multiple small
+ * header files, but that's kind of annoying to context-switch through,
+ * so we put all the main ones here.
+ */
+#ifndef __RPI_H__
+#define __RPI_H__
+
+#define RPI_COMPILED
+
 #include <stdint.h>
+
+/*****************************************************************************
+ * output routines.
+ */
+
+
+// let the user override the system putchar routine.
+
+typedef int (*rpi_putchar_t)(int chr);
+// put a single char
+extern rpi_putchar_t rpi_putchar;
+
+// override the routine.
+rpi_putchar_t rpi_putchar_set(rpi_putchar_t putc);
+#define rpi_set_putc rpi_putchar_set
+
+// print string to uart (via rpi_putchar)
+int putk(const char *p);
 
 /***************************************************************************
  * simple timer functions.
@@ -72,3 +100,12 @@ void dummy(unsigned);
 void nop(void);
 
 void rpi_wait(void);
+
+/*********************************************************
+ * some gcc helpers.
+ */
+
+// gcc memory barrier.
+#define gcc_mb() asm volatile ("" : : : "memory")
+
+#endif

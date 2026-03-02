@@ -1,5 +1,6 @@
 // engler, cs140e: reboot the pi.
 #include "rpi.h"
+#include "uart.h"
 
 void rpi_reboot(void) {
     uart_flush_tx();

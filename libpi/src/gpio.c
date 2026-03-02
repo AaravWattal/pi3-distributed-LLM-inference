@@ -147,6 +147,7 @@ void gpio_set_function(unsigned pin, gpio_func_t func) {
 
 // weird panic: we just infinite loop since we don't have 
 // printk in 2-gpio.
-void gpio_panic(const char *msg, ...) {
+void panic(const char *msg, ...) {
+    (void)msg;
     while(1);
 }

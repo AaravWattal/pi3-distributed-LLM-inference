@@ -1,4 +1,5 @@
 #include "rpi.h"
+#include "uart.h"
 
 // print out a special message so bootloader exits
 void clean_reboot(void) {

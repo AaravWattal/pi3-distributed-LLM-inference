@@ -1,4 +1,5 @@
 #include "rpi.h"
+#include "uart.h"
 
 #if 0
 int rpi_putchar(int c) { 

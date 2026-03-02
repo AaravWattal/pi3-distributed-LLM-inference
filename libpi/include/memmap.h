@@ -1,5 +1,6 @@
 #ifndef __MEMMAP_H__
 #define __MEMMAP_H__
+#include <stdint.h>
 
 // symbols defined in libpi/memmap
 extern uint32_t  __code_start__[];
