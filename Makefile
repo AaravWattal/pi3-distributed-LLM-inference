@@ -33,7 +33,7 @@ LIBPI_OBJS = \
 ALL_OBJS = main.o $(LIBPI_OBJS)
 DEPS     = $(MEMMAP) ./Makefile
 
-all: boot/kernel7.img
+all: boot/kernel.img
 
 $(ALL_OBJS): $(DEPS)
 
@@ -49,11 +49,11 @@ kernel.elf: $(ALL_OBJS) $(DEPS)
 kernel.list: kernel.elf
 	$(OD) -d kernel.elf > kernel.list
 
-boot/kernel7.img: kernel.elf
+boot/kernel.img: kernel.elf
 	$(OCP) kernel.elf -O binary $@
 
 clean::
-	rm -f $(ALL_OBJS) kernel.elf kernel.list boot/kernel7.img
+	rm -f $(ALL_OBJS) kernel.elf kernel.list boot/kernel.img
 
 .PHONY: all clean
-.PRECIOUS: kernel.elf boot/kernel7.img
+.PRECIOUS: kernel.elf boot/kernel.img

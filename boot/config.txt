@@ -1,4 +1,4 @@
-kernel=kernel7.img
+kernel=kernel.img
 
 enable_uart=1
 dtoverlay=disable-bt
