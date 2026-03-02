@@ -1,9 +1,7 @@
 #include "uart.h"
 
-int main(void) {
-    uart_init();
-
-    for (int i = 0; ; i++) {
+void notmain(void) {
+    for (;;) {
         uart_put8('H');
         uart_put8('e');
         uart_put8('l');
@@ -18,8 +16,9 @@ int main(void) {
         uart_put8('d');
         uart_put8('\r');
         uart_put8('\n');
-        for (volatile unsigned long d = 0; d < 500000; d++) { }
-    }
 
-    return 0;
+        for (volatile unsigned long d = 0; d < 500000; d++) {
+            // simple delay
+        }
+    }
 }

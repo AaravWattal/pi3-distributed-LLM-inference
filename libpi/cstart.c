@@ -24,7 +24,7 @@ void *program_end(void) {
 // just zeroing out the bss section (where zero-initialized
 // static var and globals live).
 void _cstart() {
-	void main(void);
+    void notmain(void);
 
     // zero out the bss section.  if you look in the 
     // linker script <libpi/memmap> you can see where
@@ -72,8 +72,8 @@ void _cstart() {
     // 4k of memory.
 //    redzone_init();
 
-    // call main
-    main(); 
+    // call user's <notmain> (should add argv)
+    notmain(); 
 
     // if they return and don't exit, just reboot
 	clean_reboot();

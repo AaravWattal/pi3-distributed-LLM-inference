@@ -4,23 +4,17 @@
 @ the linked binary.
 .section ".text.boot"
 
-@ this is where we start.  if you look in any '.list' file, you 
-@ better see code at the first addresses (in our case: starting
-@ at 0x8000).
+@ this is the whole purpose for this <start.S>: so we can 
+@ have a gap at the start so we can copy the sent code and
+@ not have it hit the bootloader code.
 .globl _start
 _start:
-
-    @ force the mode to be SUPER.
-    @ mov r0,  #SUPER_MODE
-    @ orr r0,r0,#(1<<7)    @ disable interrupts.
-    @ msr cpsr, r0
-    @ prefetch_flush(r1)
-
-    mov sp, #STACK_ADDR @ initialize stack pointer
-    mov fp, #0          @ clear frame pointer reg.  don't think needed.
-    @ bl notmain        @ we could jump right to notmain
-    bl _cstart          @ call our code to do initialization.
-    bl rpi_reboot       @ if they return just reboot.
+    b skip
+.space 0x200000-0x8004,0
+skip:
+    mov sp,#0x08000000
+    bl _cstart
+hang: b rpi_reboot
 
 @ keep put32/get32 here so that they are in the same location in every binary.
 @ if you want to override them easily, can re-define the name in rpi-asm.h

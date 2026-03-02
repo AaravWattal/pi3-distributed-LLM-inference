@@ -8,7 +8,10 @@
 
 #define RPI_COMPILED
 
+#include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <string.h>
 
 /*****************************************************************************
  * output routines.
@@ -27,6 +30,12 @@ rpi_putchar_t rpi_putchar_set(rpi_putchar_t putc);
 
 // print string to uart (via rpi_putchar)
 int putk(const char *p);
+
+// printf with a lot of restrictions.
+int printk(const char *format, ...);
+
+// vprintf with a lot of restrictions.
+int vprintk(const char *fmt, va_list ap);
 
 /***************************************************************************
  * simple timer functions.

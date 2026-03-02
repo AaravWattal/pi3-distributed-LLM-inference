@@ -17,9 +17,43 @@
 #ifndef __GETCODE_H__
 #define __GETCODE_H__
 #include "rpi.h"
+#include "libc/demand.h"
 #include "boot-crc32.h"  // has the crc32 implementation.
 #include "boot-defs.h"   // protocol opcode values.
 #include "memmap.h"
+#include "uart.h"
+#include <string.h>
+
+/*******************************************************
+ * UART implementation of our routines.
+ */
+
+// non-blocking: returns 1 if there is data, 0 otherwise.
+static inline int boot_has_data(void) {
+    return uart_has_data();
+}
+
+// returns 8-bits from the network connection.
+//
+// should probably allow this to return a failure code
+// (timeout, network error)
+//
+// can check by making sure you get a get_code() < 0 
+// (not reboot, not lockup) if there is an error.
+static inline uint8_t boot_get8(void) {
+    return uart_get8();
+}
+
+// sends 8-bits on the network connection.
+//
+// should probably allow this to return a failure code
+// (timeout, network error)
+// 
+// can check by making sure you get a get_code() < 0 
+// (not reboot, not lockup) if there is an error.
+static void boot_put8(uint8_t x) {
+    uart_put8(x);
+}
 
 /***************************************************************
  * 1. Helper routines.  You shouldn't need to modify these for
@@ -214,7 +248,7 @@ uint32_t get_code(void) {
         panic("Expected PUT_CODE");
     }
 
-    for (int i = 0; i < nbytes; i++) {
+    for (uint32_t i = 0; i < nbytes; i++) {
         uint8_t code_byte = boot_get8();
         PUT8(addr + i, code_byte);
     }

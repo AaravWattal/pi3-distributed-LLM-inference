@@ -5,6 +5,9 @@ AS   = $(ARM)-as
 OD   = $(ARM)-objdump
 OCP  = $(ARM)-objcopy
 
+HOST_CC     = gcc
+HOST_CFLAGS = -Wall -Wextra -g -Ilibunix -Ilibpi -Ilibpi/boot
+
 MEMMAP = libpi/memmap
 INC    = -Ilibpi -Ilibpi/include
 
@@ -21,6 +24,8 @@ LIBPI_OBJS = \
 	libpi/src/put-get8.o \
 	libpi/libc/putk.o \
 	libpi/libc/putchar.o \
+	libpi/libc/printk.o \
+	libpi/libc/strlen.o \
 	libpi/src/gpio.o \
 	libpi/src/uart.o \
 	libpi/src/timer.o \
@@ -30,10 +35,16 @@ LIBPI_OBJS = \
 	libpi/src/rpi-wait.o \
 	libpi/cstart.o
 
-ALL_OBJS = main.o $(LIBPI_OBJS)
+APP_OBJS  = main.o $(LIBPI_OBJS)
+BOOT_OBJS = libpi/boot/boot-main.o $(LIBPI_OBJS)
+ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
+
 DEPS     = $(MEMMAP) ./Makefile
 
-all: boot/kernel.img
+LIBUNIX_SRCS      = $(filter-out libunix/put-get.c libunix/pi-cat.c, $(wildcard libunix/*.c))
+LIBUNIX_HOST_OBJS = $(LIBUNIX_SRCS:.c=.host.o)
+
+all: boot/kernel.img main.bin pi3-install
 
 $(ALL_OBJS): $(DEPS)
 
@@ -43,17 +54,31 @@ $(ALL_OBJS): $(DEPS)
 %.o: %.S $(DEPS)
 	$(CC) -c $(ASFLAGS) $< -o $@
 
-kernel.elf: $(ALL_OBJS) $(DEPS)
-	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(ALL_OBJS)
+kernel.elf: $(APP_OBJS) $(DEPS)
+	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(APP_OBJS)
+
+bootloader.elf: $(BOOT_OBJS) $(DEPS)
+	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(BOOT_OBJS)
 
 kernel.list: kernel.elf
 	$(OD) -d kernel.elf > kernel.list
 
-boot/kernel.img: kernel.elf
+boot/kernel.img: bootloader.elf
+	$(OCP) bootloader.elf -O binary $@
+
+main.bin: kernel.elf
 	$(OCP) kernel.elf -O binary $@
 
+libunix/%.host.o: libunix/%.c
+	$(HOST_CC) $(HOST_CFLAGS) -c $< -o $@
+
+pi3-install: $(LIBUNIX_HOST_OBJS)
+	$(HOST_CC) $(HOST_CFLAGS) -o $@ $(LIBUNIX_HOST_OBJS)
+
 clean::
-	rm -f $(ALL_OBJS) kernel.elf kernel.list boot/kernel.img
+	rm -f $(ALL_OBJS) $(LIBUNIX_HOST_OBJS) libunix/*.host.o \
+	      kernel.elf kernel.list main.bin \
+	      bootloader.elf boot/kernel.img pi3-install
 
 .PHONY: all clean
 .PRECIOUS: kernel.elf boot/kernel.img
