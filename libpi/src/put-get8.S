@@ -1,5 +1,3 @@
-
-
 .globl put8
 .globl PUT8
 put8:
