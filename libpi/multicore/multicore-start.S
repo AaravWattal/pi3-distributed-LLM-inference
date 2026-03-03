@@ -1,5 +1,5 @@
 .global multicore_entry
-secondary_entry:
+multicore_entry:
     @ read core id from mpidr
     mrc p15, 0, r0, c0, c0, 5
     and r0, r0, #3

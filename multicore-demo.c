@@ -25,7 +25,7 @@ void run_multicore_demo(void) {
     }
 
     // Start cores
-    start_multicore(&multicore_main);
+    start_multicore(&multicore_entry);
 
     // Have core0 do calculations
     core_results[0] = 0 * 0;
@@ -38,6 +38,8 @@ void run_multicore_demo(void) {
     while (!core_done[1] || !core_done[2] || !core_done[3]) {
         dev_barrier();
     }
+
+    dev_barrier();
 
     // Print results
     for (int i = 0; i < 4; i++) {
