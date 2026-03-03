@@ -34,7 +34,7 @@ LIBPI_COMMON = \
 	libpi/src/rpi-wait.o \
 	libpi/cstart.o
 
-APP_OBJS  = main.o libpi/start.o $(LIBPI_COMMON)
+APP_OBJS  = main.o multicore-demo.o libpi/multicore/multicore.o libpi/multicore/multicore-start.o libpi/start.o $(LIBPI_COMMON)
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 
