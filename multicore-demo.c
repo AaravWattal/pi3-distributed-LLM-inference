@@ -2,52 +2,78 @@
 #include "rpi.h"
 #include "uart.h"
 
-typedef struct {
-    int input;
-    int* output;
-} square_args_t;
+#define WORK_ITERATIONS 5000000
 
-static void compute_square(void* arg) {
-    square_args_t* a = (square_args_t*)arg;
-    *a->output = a->input * a->input;
+typedef struct {
+    uint32_t* output;
+} compute_args_t;
+
+static void compute_sum_squares(void* arg) {
+    compute_args_t* a = (compute_args_t*)arg;
+
+    uint32_t sum = 0;
+
+    for (uint32_t i = 1; i <= WORK_ITERATIONS; i++) {
+        sum += i * i;
+    }
+
+    *a->output = sum;
 }
 
-void run_multicore_demo(void) {
-    printk("Starting multicore demo\r\n");
+/* Run the same three tasks on core 0, one after another. */
+static void run_sequential(uint32_t* r1, uint32_t* r2, uint32_t* r3) {
+    compute_args_t args1 = { .output = r1 };
+    compute_args_t args2 = { .output = r2 };
+    compute_args_t args3 = { .output = r3 };
 
-    multicore_init();
+    compute_sum_squares(&args1);
+    compute_sum_squares(&args2);
+    compute_sum_squares(&args3);
+}
 
-    int result1 = 0;
-    int result2 = 0;
-    int result3 = 0;
-    square_args_t args1 = { .input = 3, .output = &result1 };
-    square_args_t args2 = { .input = 5, .output = &result2 };
-    square_args_t args3 = { .input = 7, .output = &result3 };
+static void run_parallel(uint32_t* r1, uint32_t* r2, uint32_t* r3) {
+    compute_args_t args1 = { .output = r1 };
+    compute_args_t args2 = { .output = r2 };
+    compute_args_t args3 = { .output = r3 };
 
-    int status;
-
-    status = multicore_call_async(1, compute_square, &args1);
-    if (status != MULTICORE_OK) {
-        printk("Core 1 call failed: %d\r\n", status);
-        return;
-    }
-    status = multicore_call_async(2, compute_square, &args2);
-    if (status != MULTICORE_OK) {
-        printk("Core 2 call failed: %d\r\n", status);
-        return;
-    }
-    status = multicore_call_async(3, compute_square, &args3);
-    if (status != MULTICORE_OK) {
-        printk("Core 3 call failed: %d\r\n", status);
-        return;
-    }
+    multicore_call_async(1, compute_sum_squares, &args1);
+    multicore_call_async(2, compute_sum_squares, &args2);
+    multicore_call_async(3, compute_sum_squares, &args3);
 
     multicore_wait(1);
     multicore_wait(2);
     multicore_wait(3);
+}
 
-    printk("Core 1: 3^2 = %d\r\n", result1);
-    printk("Core 2: 5^2 = %d\r\n", result2);
-    printk("Core 3: 7^2 = %d\r\n", result3);
-    printk("Multicore demo done\r\n");
+void run_multicore_demo(void) {
+    printk("Multicore demo: sum of squares 1..%d\r\n", WORK_ITERATIONS);
+
+    multicore_init();
+
+    uint32_t seq1 = 0, seq2 = 0, seq3 = 0;
+    uint32_t par1 = 0, par2 = 0, par3 = 0;
+
+    uint32_t t0 = timer_get_usec();
+    run_sequential(&seq1, &seq2, &seq3);
+    uint32_t t1 = timer_get_usec();
+
+    uint32_t t2 = timer_get_usec();
+    run_parallel(&par1, &par2, &par3);
+    uint32_t t3 = timer_get_usec();
+
+    uint32_t usec_seq = t1 - t0;
+    uint32_t usec_par = t3 - t2;
+
+    printk("Sequential: %u usec\r\n", usec_seq);
+    printk("Parallel: %u usec\r\n", usec_par);
+
+    if (seq1 == par1 && seq2 == par2 && seq3 == par3) {
+        printk("Results match.\r\n");
+    } else {
+        printk("MISMATCH: sequential vs parallel results differ!\r\n");
+    }
+
+    if (usec_seq > 0 && usec_par > 0) {
+        printk("Approx speedup: %u x\r\n", usec_seq / usec_par);
+    }
 }
