@@ -5,10 +5,11 @@
 #define NUM_CORES 4
 
 // Status codes
-#define MULTICORE_OK        0
-#define MULTICORE_ERR_CORE  -1      // Invalid core ID
-#define MULTICORE_ERR_NULL  -2      // Null function pointer
-#define MULTICORE_ERR_BUSY  -3      // Core still running previous task
+#define MULTICORE_OK          0
+#define MULTICORE_ERR_CORE   -1     // Invalid core ID
+#define MULTICORE_ERR_NULL   -2     // Null function pointer
+#define MULTICORE_ERR_BUSY   -3     // Core still running previous task
+#define MULTICORE_ERR_READY  -4     // Core not in command loop yet
 
 // Worker function type
 typedef void (*multicore_worker_t)(void* arg);
@@ -18,7 +19,6 @@ extern void multicore_entry(void);
 
 void multicore_init(void);
 void multicore_main(unsigned core_id);
-void command_loop(unsigned core_id);
 
 unsigned multicore_get_core_id(void);
 
