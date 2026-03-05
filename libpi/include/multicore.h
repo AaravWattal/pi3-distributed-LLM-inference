@@ -4,15 +4,28 @@
 
 #define NUM_CORES 4
 
+// Status codes
+#define MULTICORE_OK        0
+#define MULTICORE_ERR_CORE  -1      // Invalid core ID
+#define MULTICORE_ERR_NULL  -2      // Null function pointer
+
+// Worker function type
+typedef void (*multicore_worker_t)(void* arg);
+
+// Defined in multicore-start.S
+extern void multicore_entry(void);
+
 void multicore_init(void);
 void multicore_main(unsigned core_id);
 void command_loop(unsigned core_id);
 
 unsigned multicore_get_core_id(void);
 
-// Runs a specified function on a specific core
-int multicore_call(unsigned core_id, int (*func)(void*), void* arg, int* result);
-int multicore_call_async(unsigned core_id, int (*func)(void*), void* arg);
+// Runs worker function on a core
+int multicore_call(unsigned core_id, multicore_worker_t func, void* arg);
+
+// Asynchronous multicore_call
+int multicore_call_async(unsigned core_id, multicore_worker_t func, void* arg);
 
 // Checks if specified core has finished running its function
 int multicore_check_done(unsigned core_id);
