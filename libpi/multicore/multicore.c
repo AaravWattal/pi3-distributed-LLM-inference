@@ -126,3 +126,16 @@ int multicore_wait(unsigned core_id) {
 
     return MULTICORE_OK;
 }
+
+// Blocks until worker cores have finished running their functions
+int multicore_wait_all(void) {
+    for (int i = 1; i < NUM_CORES; i++) {
+        int status = multicore_wait(i);
+
+        if (status != MULTICORE_OK) {
+            return status;
+        }
+    }
+
+    return MULTICORE_OK;
+}

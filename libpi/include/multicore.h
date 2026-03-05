@@ -34,3 +34,6 @@ int multicore_check_done(unsigned core_id);
 // Waits for a specified core to finish running its function
 // Is blocking
 int multicore_wait(unsigned core_id);
+
+// Waits for all cores to finish running their functions
+int multicore_wait_all(void);

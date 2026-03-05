@@ -36,13 +36,29 @@ static void run_parallel(uint32_t* r1, uint32_t* r2, uint32_t* r3) {
     compute_args_t args2 = { .output = r2 };
     compute_args_t args3 = { .output = r3 };
 
-    multicore_call_async(1, compute_sum_squares, &args1);
-    multicore_call_async(2, compute_sum_squares, &args2);
-    multicore_call_async(3, compute_sum_squares, &args3);
+    int status = multicore_call_async(1, compute_sum_squares, &args1);
+    
+    if (status != MULTICORE_OK) {
+        panic("Core 1 call failed\n");
+    }
 
-    multicore_wait(1);
-    multicore_wait(2);
-    multicore_wait(3);
+    status = multicore_call_async(2, compute_sum_squares, &args2);
+
+    if (status != MULTICORE_OK) {
+        panic("Core 2 call failed\n");
+    }
+
+    multicore_call_async(3, compute_sum_squares, &args3);
+    
+    if (status != MULTICORE_OK) {
+        panic("Core 3 call failed\n");
+    }
+
+    status = multicore_wait_all();
+
+    if (status != MULTICORE_OK) {
+        panic("Core wait all failed\n");
+    }
 }
 
 void run_multicore_demo(void) {
