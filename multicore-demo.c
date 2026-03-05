@@ -2,47 +2,52 @@
 #include "rpi.h"
 #include "uart.h"
 
-static volatile uint32_t core_results[4] __attribute__((aligned(8)));
-static volatile uint32_t core_done[4] __attribute__((aligned(8)));
+typedef struct {
+    int input;
+    int* output;
+} square_args_t;
 
-void multicore_main(uint32_t core_id) {
-    // Do a simple calculation of core_id^2
-    uint32_t result = core_id * core_id;
-    core_results[core_id] = result;
-
-    dev_barrier();
-
-    core_done[core_id] = 1;
+static void compute_square(void* arg) {
+    square_args_t* a = (square_args_t*)arg;
+    *a->output = a->input * a->input;
 }
 
 void run_multicore_demo(void) {
     printk("Starting multicore demo\r\n");
 
-    // Clear results as sanity check
-    for (int i = 0; i < 4; i++) {
-        core_results[i] = 0;
-        core_done[i] = 0;
+    multicore_init();
+
+    int result1 = 0;
+    int result2 = 0;
+    int result3 = 0;
+    square_args_t args1 = { .input = 3, .output = &result1 };
+    square_args_t args2 = { .input = 5, .output = &result2 };
+    square_args_t args3 = { .input = 7, .output = &result3 };
+
+    int status;
+
+    status = multicore_call_async(1, compute_square, &args1);
+    if (status != MULTICORE_OK) {
+        printk("Core 1 call failed: %d\r\n", status);
+        return;
+    }
+    status = multicore_call_async(2, compute_square, &args2);
+    if (status != MULTICORE_OK) {
+        printk("Core 2 call failed: %d\r\n", status);
+        return;
+    }
+    status = multicore_call_async(3, compute_square, &args3);
+    if (status != MULTICORE_OK) {
+        printk("Core 3 call failed: %d\r\n", status);
+        return;
     }
 
-    // Start cores
-    start_multicore(&multicore_entry);
+    multicore_wait(1);
+    multicore_wait(2);
+    multicore_wait(3);
 
-    // Have core0 do calculations
-    core_results[0] = 0 * 0;
-
-    dev_barrier();
-
-    core_done[0] = 1;
-
-    // Wait for other cores to finish
-    while (!core_done[1] || !core_done[2] || !core_done[3]) {
-        dev_barrier();
-    }
-
-    dev_barrier();
-
-    // Print results
-    for (int i = 0; i < 4; i++) {
-        printk("Core %d result: %d\r\n", i, core_results[i]);
-    }
+    printk("Core 1: 3^2 = %d\r\n", result1);
+    printk("Core 2: 5^2 = %d\r\n", result2);
+    printk("Core 3: 7^2 = %d\r\n", result3);
+    printk("Multicore demo done\r\n");
 }
