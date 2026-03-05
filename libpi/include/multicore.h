@@ -8,6 +8,7 @@
 #define MULTICORE_OK        0
 #define MULTICORE_ERR_CORE  -1      // Invalid core ID
 #define MULTICORE_ERR_NULL  -2      // Null function pointer
+#define MULTICORE_ERR_BUSY  -3      // Core still running previous task
 
 // Worker function type
 typedef void (*multicore_worker_t)(void* arg);

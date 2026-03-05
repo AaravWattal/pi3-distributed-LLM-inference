@@ -46,6 +46,7 @@ void command_loop(unsigned core_id) {
             asm volatile("wfe");
         }
 
+        dev_barrier();
         uint32_t seq = cmd_seq[core_id];
         uint32_t func_addr = cmd_funcs[core_id];
         uint32_t arg = cmd_args[core_id];
@@ -80,6 +81,11 @@ int multicore_call_async(unsigned core_id, multicore_worker_t func, void* arg) {
 
     if (func == 0) {
         return MULTICORE_ERR_NULL;
+    }
+
+    dev_barrier();
+    if (cmd_seq[core_id] != cmd_done[core_id]) {
+        return MULTICORE_ERR_BUSY;
     }
 
     cmd_funcs[core_id] = (uint32_t)func;
