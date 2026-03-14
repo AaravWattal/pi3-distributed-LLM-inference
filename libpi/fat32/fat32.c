@@ -6,7 +6,7 @@
 
 // Print extra tracing info when this is enabled.  You can and should add your
 // own.
-static int trace_p = 1; 
+static int trace_p = 0; 
 static int init_p = 0;
 
 fat32_boot_sec_t boot_sector;
@@ -27,8 +27,8 @@ fat32_fs_t fat32_mk(mbr_partition_ent_t *partition) {
   struct fsinfo* fs_info = pi_sec_read(partition->lba_start + 1, 1);
   fat32_fsinfo_check(fs_info);
 
-  fat32_volume_id_print("volume id", &boot_sector);
-  fat32_fsinfo_print("fs info", fs_info);
+  // fat32_volume_id_print("volume id", &boot_sector);
+  // fat32_fsinfo_print("fs info", fs_info);
 
   // END OF PART 2
   // The rest of this is for Part 3:

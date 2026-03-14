@@ -1,11 +1,15 @@
 // Adapted from: https://github.com/karpathy/llama2.c/blob/master/run.c
 /* Inference for Llama-2 Transformer model in pure C */
 #include "rpi.h"
-#include "pt-vm.h"
-#include "armv6-pmu.h"
+#include "asm-helpers.h"
+#include "uart.h"
+// #include "pt-vm.h"
+// #include "armv6-pmu.h"
 #include "pi-sd.h"
 #include "fat32.h"
-#include "libc/str_matches_hex_pattern.c"
+#include "mbr.h"
+
+#include "libc/parse-byte-token.c"
 #include "libc/isspace.c"
 #include "libc/print_float.c"
 #include "libc/expf.h"
@@ -16,8 +20,10 @@
 #include "libc/bsearch.c"
 #include "libc/qsort.c"
 #include "libc/isprint.c"
-#include "gprof.h"
+// #include "gprof.h"
 
+#define SEG_HEAP     (1024 * 1024)
+#define HEAP_SIZE_MB FAT32_HEAP_MB
 typedef struct {
     int dim; // transformer dimension
     int hidden_dim; // for ffn layers
@@ -467,7 +473,7 @@ char* decode(Tokenizer* t, int prev_token, int token) {
     // careful, some tokens designate raw bytes, and look like e.g. '<0x01>'
     // parse this and convert and return the actual byte
     unsigned char byte_val;
-    if (str_matches_hex_pattern(piece, &byte_val)) {
+    if (parse_byte_token(piece, &byte_val)) {
         piece = (char*)t->byte_pieces + byte_val * 2;
     }
     return piece;
@@ -881,9 +887,9 @@ static inline void enable_vfp(void) {
 // ------ controls here -------
 // MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
 #define VFP 0
-#define CACHING 1
-#define TIMER_PROFILING 1
-#define CHECKPOINT_PATH "L1.BIN"
+#define CACHING 0
+#define TIMER_PROFILING 0
+#define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
 #define STEPS 10
 
@@ -909,6 +915,8 @@ void notmain(void) {
     fs = fat32_mk(&partition_run);
     root = fat32_get_root(&fs);
 
+    printk("Got root\n");
+
     // default parameters, SET THEM HARDCODED FOR OUR PROJECT
     char *checkpoint_path = CHECKPOINT_PATH;  // e.g. out/model.bin
     char *tokenizer_path = TOKENIZER_PATH;
@@ -920,6 +928,7 @@ void notmain(void) {
     char *mode = "generate";    // generate|chat
     char *system_prompt = NULL; // the (optional) system prompt to use in chat mode
 
+    printk("Got checkpoint path!\n");
     printk("%s\n", checkpoint_path);
 
     // parameter validation/overrides
@@ -933,13 +942,19 @@ void notmain(void) {
     build_transformer(&transformer, checkpoint_path);
     if (steps == 0 || steps > transformer.config.seq_len) steps = transformer.config.seq_len; // override to ~max length
 
+    printk("Built transformer\n");
+
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer tokenizer;
     build_tokenizer(&tokenizer, tokenizer_path, transformer.config.vocab_size);
 
+    printk("Built tokenizer\n");
+
     // build the Sampler
     Sampler sampler;
     build_sampler(&sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
+
+    printk("Built sampler\n");
 
     #if TIMER_PROFILING
     // enable collection of profiler data
