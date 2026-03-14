@@ -149,6 +149,8 @@ void memory_map_weights(TransformerWeights *w, Config* p, float* ptr, int shared
 
 void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weights,
                      int* fd, float** data, long* file_size) {
+    printk("Reading checkpoint: %s\n", checkpoint);
+
     pi_dirent_t root_copy = root;
     pi_file_t *file = fat32_read(&fs, &root_copy, checkpoint);
     if (!file || !file->data) {
@@ -886,14 +888,14 @@ static inline void enable_vfp(void) {
 
 // ------ controls here -------
 // MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
-#define VFP 0
+#define VFP 1
 #define CACHING 0
 #define TIMER_PROFILING 0
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
 #define STEPS 10
 
-void notmain(void) {
+void notmain_llama_inference(void) {
     uart_init();
     unsigned long MB = 1024*1024;
     kmalloc_init_set_start((void*)SEG_HEAP, HEAP_SIZE_MB*MB);
@@ -928,7 +930,7 @@ void notmain(void) {
     char *mode = "generate";    // generate|chat
     char *system_prompt = NULL; // the (optional) system prompt to use in chat mode
 
-    printk("Got checkpoint path!\n");
+    printk("Got checkpoint path: \n");
     printk("%s\n", checkpoint_path);
 
     // parameter validation/overrides
@@ -967,6 +969,7 @@ void notmain(void) {
 
     // run!
     if (strcmp(mode, "generate") == 0) {
+        printk("Generating...\n");
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
         #if TIMER_PROFILING
         gprof_dump(0);
