@@ -215,38 +215,35 @@ void softmax(float* x, int size) {
     }
 }
 
-// optimized matmul with loop unrolling
+// NEON-accelerated matmul: W (d,n) @ x (n,) -> xout (d,)
+// Processes 4 floats per cycle using 128-bit NEON registers.
+#ifdef __ARM_NEON
+#include <arm_neon.h>
 void matmul(float* xout, float* x, float* w, int n, int d) {
-    // W (d,n) @ x (n,) -> xout (d,)
-    // by far the most amount of time is spent inside this little function
-    
-    // Simple implementation with loop unrolling for better performance
-    int i = 0;
-    
-    // Process 4 output elements at a time
-    for (; i < d - 3; i += 4) {
-        float val0 = 0.0f;
-        float val1 = 0.0f;
-        float val2 = 0.0f;
-        float val3 = 0.0f;
-        
-        // Go through all input elements
-        for (int j = 0; j < n; j++) {
-            float xj = x[j];  // Load once, use 4 times
-            val0 += w[i * n + j] * xj;
-            val1 += w[(i+1) * n + j] * xj;
-            val2 += w[(i+2) * n + j] * xj;
-            val3 += w[(i+3) * n + j] * xj;
+    for (int i = 0; i < d; i++) {
+        const float* row = w + i * n;
+        float32x4_t acc = vdupq_n_f32(0.0f);
+        int j = 0;
+        for (; j <= n - 4; j += 4) {
+            float32x4_t wv = vld1q_f32(row + j);
+            float32x4_t xv = vld1q_f32(x + j);
+            acc = vmlaq_f32(acc, wv, xv);
         }
-        
-        xout[i] = val0;
-        xout[i+1] = val1;
-        xout[i+2] = val2;
-        xout[i+3] = val3;
+        // horizontal sum of the 4-lane accumulator
+        float32x2_t sum2 = vadd_f32(vget_low_f32(acc), vget_high_f32(acc));
+        sum2 = vpadd_f32(sum2, sum2);
+        float val = vget_lane_f32(sum2, 0);
+        // scalar tail for n not divisible by 4
+        for (; j < n; j++) {
+            val += row[j] * x[j];
+        }
+        xout[i] = val;
     }
-    
-    // Handle remaining elements (less than 4)
-    for (; i < d; i++) {
+}
+#else
+// scalar fallback if NEON is unavailable
+void matmul(float* xout, float* x, float* w, int n, int d) {
+    for (int i = 0; i < d; i++) {
         float val = 0.0f;
         for (int j = 0; j < n; j++) {
             val += w[i * n + j] * x[j];
@@ -254,6 +251,7 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
         xout[i] = val;
     }
 }
+#endif
 
 float* forward(Transformer* transformer, int token, int pos) {
 
