@@ -6,6 +6,8 @@
 #include "libc/demand.h"
 
 void notmain(void) {
+    kmalloc_init_set_start((void*)(1024*1024), FAT32_HEAP_MB * 1024 * 1024);
+
     printk("Initializing SD card...\r\n");
 
     if (pi_sd_init() != 1) {

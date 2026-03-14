@@ -773,6 +773,7 @@ bool emmc_init() {
   gpio_set_function(50, GPIO_FUNC_ALT3);
   gpio_set_function(51, GPIO_FUNC_ALT3);
   gpio_set_function(52, GPIO_FUNC_ALT3);
+  gpio_set_function(53, GPIO_FUNC_ALT3);
 
   device.transfer_blocks = 0;
   device.last_command_value = 0;

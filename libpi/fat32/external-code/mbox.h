@@ -34,7 +34,7 @@ enum {
 
 #define MAILBOX_FULL   (1<<31)
 #define MAILBOX_EMPTY  (1<<30)
-#define MAILBOX_START  0x2000B880
+#define MAILBOX_START  0x3F00B880
 #define GPU_MEM_OFFSET    0x40000000
 
 // document states: only using 8 right now.
@@ -49,9 +49,9 @@ enum {
     Configuration	0x2000B89C
     Write	        0x2000B8A0
  */
-#define MBOX_READ   0x2000B880
-#define MBOX_STATUS 0x2000B898
-#define MBOX_WRITE  0x2000B8A0
+#define MBOX_READ   0x3F00B880
+#define MBOX_STATUS 0x3F00B898
+#define MBOX_WRITE  0x3F00B8A0
 
 // need to pass in the pointer as a GPU address?
 static inline uint32_t uncached(volatile void *cp) { 

@@ -14,7 +14,8 @@ INC    = -Ilibpi -Ilibpi/include -Ilibpi/fat32 -Ilibpi/fat32/external-code
 OPT_LEVEL ?= -O2
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
             -fno-builtin -fno-stack-protector -fno-exceptions \
-            -marm -mcpu=cortex-a53 -mfpu=vfp -mfloat-abi=hard -std=gnu99 $(INC)
+            -marm -mcpu=cortex-a53 -mfpu=vfp -mfloat-abi=hard \
+            -mno-unaligned-access -std=gnu99 $(INC)
 
 ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 $(INC)
 

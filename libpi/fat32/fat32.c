@@ -1,4 +1,5 @@
 #include "rpi.h"
+#include "uart.h"
 #include "fat32.h"
 #include "fat32-helpers.h"
 #include "pi-sd.h"

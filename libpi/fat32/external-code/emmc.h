@@ -152,7 +152,7 @@ typedef struct  {
 #define SD_CARD_REMOVAL         (1 << 7)
 #define SD_CARD_INTERRUPT       (1 << 8)
 
-#define EMMC_BASE 0x20300000
+#define EMMC_BASE 0x3F300000
 
 #define EMMC ((emmc_regs *)EMMC_BASE)
 
