@@ -14,10 +14,10 @@ INC    = -Ilibpi -Ilibpi/include -Ilibpi/fat32 -Ilibpi/fat32/external-code
 OPT_LEVEL ?= -O2
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
             -fno-builtin -fno-stack-protector -fno-exceptions \
-            -marm -mcpu=cortex-a53 -mfpu=vfp -mfloat-abi=softfp \
+            -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=softfp \
             -mno-unaligned-access -std=gnu99 $(INC)
 
-ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 $(INC)
+ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 $(INC)
 
 LIBPI_COMMON = \
 	libpi/mem-barrier.o \
