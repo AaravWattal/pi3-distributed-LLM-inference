@@ -82,6 +82,31 @@ void dsb(void);
 // use this if you need a device memory barrier.
 void dev_barrier(void);
 
+/*******************************************************************************
+ * simple memory allocation: no free, just have to reboot().
+ */
+
+// returns 0-filled memory.
+void *kmalloc(unsigned nbytes) ;
+void *kmalloc_notzero(unsigned nbytes) ;
+void *kmalloc_aligned(unsigned nbytes, unsigned alignment);
+
+// initialize and set where the heap starts and give a maximum
+// size in bytes
+void kmalloc_init_set_start(void *addr, unsigned max_nbytes);
+static inline void kmalloc_init(void) {
+    unsigned long MB = 1024*1024;
+    kmalloc_init_set_start((void*)MB, 64*MB);
+}
+
+// return pointer to the first free byte.  used for
+// bounds checking.
+void *kmalloc_heap_ptr(void);
+// pointer to initial start of heap
+void *kmalloc_heap_start(void);
+// pointer to end of heap
+void *kmalloc_heap_end(void);
+
 /*****************************************************************************
  * Low-level code: you could do in C, but these are in assembly to defeat
  * the compiler.
@@ -109,6 +134,8 @@ void dummy(unsigned);
 void nop(void);
 
 void rpi_wait(void);
+
+int memiszero(const void *_p, unsigned n);
 
 /*********************************************************
  * some gcc helpers.

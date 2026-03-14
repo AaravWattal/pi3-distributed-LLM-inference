@@ -9,7 +9,7 @@ HOST_CC     = gcc
 HOST_CFLAGS = -Wall -Wextra -g -Ilibunix -Ilibpi -Ilibpi/boot
 
 MEMMAP = libpi/memmap
-INC    = -Ilibpi -Ilibpi/include
+INC    = -Ilibpi -Ilibpi/include -Ilibpi/fat32 -Ilibpi/fat32/external-code
 
 OPT_LEVEL ?= -O2
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
@@ -25,6 +25,16 @@ LIBPI_COMMON = \
 	libpi/libc/putchar.o \
 	libpi/libc/printk.o \
 	libpi/libc/strlen.o \
+	libpi/libc/strcpy.o \
+	libpi/libc/strcat.o \
+	libpi/libc/strcmp.o \
+	libpi/libc/memcpy.o \
+	libpi/libc/memcmp.o \
+	libpi/libc/memset.o \
+	libpi/libc/memiszero.o \
+	libpi/libc/our-crc32.o \
+	libpi/libc/fast-hash.o \
+	libpi/libc/kmalloc.o \
 	libpi/src/gpio.o \
 	libpi/src/uart.o \
 	libpi/src/timer.o \
@@ -34,7 +44,18 @@ LIBPI_COMMON = \
 	libpi/src/rpi-wait.o \
 	libpi/cstart.o
 
-APP_OBJS  = main.o multicore-demo.o libpi/multicore/multicore.o libpi/multicore/multicore-start.o libpi/start.o $(LIBPI_COMMON)
+FAT32_OBJS = \
+	libpi/fat32/fat32.o \
+	libpi/fat32/fat32-helpers.o \
+	libpi/fat32/fat32-lfn-helpers.o \
+	libpi/fat32/mbr.o \
+	libpi/fat32/mbr-helpers.o \
+	libpi/fat32/pi-sd.o \
+	libpi/fat32/external-code/emmc.o \
+	libpi/fat32/external-code/mbox.o \
+	libpi/fat32/external-code/unicode-utf8.o
+
+APP_OBJS  = main.o libpi/start.o $(FAT32_OBJS) $(LIBPI_COMMON)
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 
@@ -54,7 +75,7 @@ $(ALL_OBJS): $(DEPS)
 	$(CC) -c $(ASFLAGS) $< -o $@
 
 kernel.elf: $(APP_OBJS) $(DEPS)
-	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(APP_OBJS)
+	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(APP_OBJS) -lgcc
 
 bootloader.elf: $(BOOT_OBJS) $(DEPS)
 	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(BOOT_OBJS)
