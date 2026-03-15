@@ -1,0 +1,8 @@
+*.elf
+*.bin
+*.o
+pi3-install
+
+# Track files in boot/ except kernel.img
+!boot/*
+boot/kernel.img
