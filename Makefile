@@ -60,7 +60,7 @@ MULTICORE_OBJS = \
 	libpi/multicore/multicore.o \
 	libpi/multicore/multicore-start.o
 
-APP_OBJS  = main.o libpi/start.o $(FAT32_OBJS) $(LIBPI_COMMON) $(MULTICORE_OBJS)
+APP_OBJS  = main.o libpi/start.o libpi/src/interrupts-asm.o $(FAT32_OBJS) $(LIBPI_COMMON) $(MULTICORE_OBJS)
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 

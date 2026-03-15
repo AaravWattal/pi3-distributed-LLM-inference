@@ -1097,7 +1097,7 @@ void notmain(void) {
     if (strcmp(mode, "generate") == 0) {
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
         #if TIMER_PROFILING
-        gprof_dump(0);
+        gprof_dump(50);
         #endif
     } 
     else {

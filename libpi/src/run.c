@@ -21,7 +21,8 @@
 #include "libc/bsearch.c"
 #include "libc/qsort.c"
 #include "libc/isprint.c"
-// #include "gprof.h"
+
+#include "gprof.c"
 
 #define SEG_HEAP     (1024 * 1024)
 #define HEAP_SIZE_MB FAT32_HEAP_MB
@@ -918,7 +919,7 @@ static inline void enable_vfp(void) {
 // MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
 #define VFP 1
 #define CACHING 0
-#define TIMER_PROFILING 0
+#define TIMER_PROFILING 1
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
 #define STEPS 10
@@ -1006,7 +1007,7 @@ void notmain_llama_inference(void) {
         printk("Generating...\n");
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
         #if TIMER_PROFILING
-        gprof_dump(0);
+        gprof_dump(10);
         #endif
     } 
     else {

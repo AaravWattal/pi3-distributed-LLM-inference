@@ -9,13 +9,28 @@
 @ at 0x8000).
 .globl _start
 _start:
+    @ Need to be in SVC mode for IRQ exceptions
+    @ Cannot be in HYP
+    mrs r0, cpsr
+    and r1, r0, #0x1f
+    cmp r1, #0x1a              @ 0x1a = HYP_MODE
+    bne svc
 
-    @ force the mode to be SUPER.
-    @ mov r0,  #SUPER_MODE
-    @ orr r0,r0,#(1<<7)    @ disable interrupts.
-    @ msr cpsr, r0
-    @ prefetch_flush(r1)
+    @ Clear HCR so IRQs are not trapped
+    mov r0, #0
+    mcr p15, 4, r0, c1, c1, 0
 
+    @ Set SPSR_hyp
+    @ Disable interrupts
+    mov r0, #(SUPER_MODE | (1<<7))
+    msr spsr_hyp, r0
+
+    @ Leave HYP and enter SVC
+    adr r0, svc
+    msr elr_hyp, r0
+    eret
+
+svc:
     mov sp, #STACK_ADDR @ initialize stack pointer
     mov fp, #0          @ clear frame pointer reg.  don't think needed.
     @ bl notmain        @ we could jump right to notmain
