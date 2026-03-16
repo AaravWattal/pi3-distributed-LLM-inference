@@ -20,6 +20,7 @@ CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
 ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 $(INC)
 
 LIBPI_COMMON = \
+	libpi/src/pt-vm.o \
 	libpi/mem-barrier.o \
 	libpi/src/put-get8.o \
 	libpi/libc/putk.o \

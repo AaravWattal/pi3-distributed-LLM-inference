@@ -3,7 +3,7 @@
 #include "rpi.h"
 #include "asm-helpers.h"
 #include "uart.h"
-// #include "pt-vm.h"
+#include "pt-vm.h"
 // #include "armv6-pmu.h"
 #include "pi-sd.h"
 #include "fat32.h"
@@ -821,13 +821,16 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 
     // start the main loop
     long start = 0;  // used to time our code, only initialized after first iteration
+    long total_forward_ms = 0, total_sample_ms = 0;
     int next;        // will store the next token in the sequence
     int token = prompt_tokens[0]; // kick off with the first token in the prompt
     int pos = 0;     // position in the sequence
     while (pos < steps) {
 
         // forward the transformer to get logits for the next token
+        long t0 = time_in_ms();
         float* logits = forward(transformer, token, pos);
+        long t1 = time_in_ms();
 
         // advance the state machine
         if (pos < num_prompt_tokens - 1) {
@@ -836,6 +839,11 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         } else {
             // otherwise sample the next token from the logits
             next = sample(sampler, logits);
+        }
+        long t2 = time_in_ms();
+        if (start != 0) {
+            total_forward_ms += (t1 - t0);
+            total_sample_ms  += (t2 - t1);
         }
         pos++;
 
@@ -858,10 +866,13 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
         long end = time_in_ms();
+        long toks = pos - 1;
+        printk("forward: %ldms/tok  sample: %ldms/tok  total: %ldms/tok\n",
+               total_forward_ms / toks, total_sample_ms / toks,
+               (end - start) / toks);
         printk("achieved tok/s: ");
         print_float((pos-1) / (double)(end-start)*1000);
         printk("\n");
-        // //printk("achieved tok/s: %f\n", (pos-1) / (double)(end-start)*1000);
     }
 
     free(prompt_tokens);
@@ -917,7 +928,7 @@ static inline void enable_vfp(void) {
 // ------ controls here -------
 // MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
 #define VFP 1
-#define CACHING 0
+#define CACHING 1
 #define TIMER_PROFILING 0
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
@@ -929,20 +940,31 @@ void notmain_llama_inference(void) {
     kmalloc_init_set_start((void*)SEG_HEAP, HEAP_SIZE_MB*MB);
 
     #if CACHING
+    printk("enabling MMU + cache...\n");
     setup_vm();
+    printk("MMU + cache enabled\n");
     #endif
     pi_sd_init();
-    
 
     #if VFP
     enable_vfp();
     #endif
 
-    // Bring up cores 1-3 and enable VFP/NEON on each of them.
+    // Bring up cores 1-3.
     multicore_init();
+
+    // Enable VFP/NEON on each worker core (each core has its own FPEXC).
     multicore_call(1, (multicore_worker_t)enable_vfp, 0);
     multicore_call(2, (multicore_worker_t)enable_vfp, 0);
     multicore_call(3, (multicore_worker_t)enable_vfp, 0);
+
+    #if CACHING
+    // Enable MMU + caches on each worker core using the table init'd above.
+    // Each core has its own SCTLR/TTBR0 that must be configured independently.
+    multicore_call(1, (multicore_worker_t)mmu_enable, 0);
+    multicore_call(2, (multicore_worker_t)mmu_enable, 0);
+    multicore_call(3, (multicore_worker_t)mmu_enable, 0);
+    #endif
 
     mbr = mbr_read();
     memcpy(&partition_run, mbr->part_tab1, sizeof(mbr_partition_ent_t));
@@ -978,7 +1000,10 @@ void notmain_llama_inference(void) {
     build_transformer(&transformer, checkpoint_path);
     if (steps == 0 || steps > transformer.config.seq_len) steps = transformer.config.seq_len; // override to ~max length
 
-    printk("Built transformer\n");
+    printk("Built transformer: dim=%d hidden=%d n_layers=%d n_heads=%d vocab=%d seq=%d\n",
+           transformer.config.dim, transformer.config.hidden_dim,
+           transformer.config.n_layers, transformer.config.n_heads,
+           transformer.config.vocab_size, transformer.config.seq_len);
 
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer tokenizer;
