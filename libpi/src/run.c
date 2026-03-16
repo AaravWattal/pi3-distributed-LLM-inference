@@ -245,6 +245,7 @@ float* forward(Transformer* transformer, int token, int pos) {
     int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
     int hidden_dim =  p->hidden_dim;
     int head_size = dim / p->n_heads;
+    float head_size_inv_sqrt = 1.0f / sqrtf(head_size);
 
     // copy the token embedding into x
     float* content_row = w->token_embedding_table + token * dim;
@@ -299,7 +300,7 @@ float* forward(Transformer* transformer, int token, int pos) {
                 for (int i = 0; i < head_size; i++) {
                     score += q[i] * k[i];
                 }
-                score /= sqrtf(head_size);
+                score *= head_size_inv_sqrt;
                 // save the score to the attention buffer
                 att[t] = score;
             }
