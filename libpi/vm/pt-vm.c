@@ -7,7 +7,7 @@
 #define aligned(x, a) (((x) & ((a)-1)) == 0)
 #define is_aligned_ptr(p, a) (((unsigned)(p) & ((a)-1)) == 0)
 
-enum { verbose_p = 1 };
+enum { verbose_p = 0 };
 enum { OneMB = 1024*1024 };
 
 vm_pt_t *vm_pt_alloc(unsigned n) {

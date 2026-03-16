@@ -12,10 +12,11 @@ MEMMAP = libpi/memmap
 INC    = -Ilibpi -Ilibpi/include -Ilibpi/vm -Ilibpi/fat32 -Ilibpi/fat32/external-code
 
 OPT_LEVEL ?= -O2
+RUN_INFERENCE ?= 1
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
             -fno-builtin -fno-stack-protector -fno-exceptions \
             -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=softfp \
-            -mno-unaligned-access -std=gnu99 $(INC)
+            -mno-unaligned-access -std=gnu99 -DRUN_INFERENCE=$(RUN_INFERENCE) $(INC)
 
 ASFLAGS = -nostdlib -nostartfiles -ffreestanding -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 $(INC)
 
@@ -67,7 +68,13 @@ VM_OBJS = \
 	libpi/vm/your-mmu-asm.o \
 	libpi/vm/cache-support.o
 
-APP_OBJS  = main.o libpi/start.o libpi/src/interrupts-asm.o $(VM_OBJS) $(LIBPI_COMMON)
+APP_OBJS_BASE = main.o libpi/start.o libpi/src/interrupts-asm.o $(VM_OBJS) $(LIBPI_COMMON)
+
+ifeq ($(RUN_INFERENCE),1)
+APP_OBJS = $(APP_OBJS_BASE) libpi/src/run.o $(FAT32_OBJS)
+else
+APP_OBJS = $(APP_OBJS_BASE)
+endif
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 

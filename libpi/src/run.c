@@ -3,7 +3,7 @@
 #include "rpi.h"
 #include "asm-helpers.h"
 #include "uart.h"
-// #include "pt-vm.h"
+#include "pt-vm.h"
 // #include "armv6-pmu.h"
 #include "pi-sd.h"
 #include "fat32.h"
@@ -890,11 +890,63 @@ static inline void enable_vfp(void) {
 // ------ controls here -------
 // MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
 #define VFP 1
-#define CACHING 0
-#define TIMER_PROFILING 1
+#define CACHING 1
+#define TIMER_PROFILING 0
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
 #define STEPS 10
+
+#if CACHING
+void flush_caches(void);
+
+static void setup_vm(void) {
+    enum { OneMB = 1024 * 1024 };
+    enum { kern_dom = 1, kern_asid = 1, kern_pid = 0x140e };
+
+    uint32_t dom_reg = DOM_client << (kern_dom * 2);
+    vm_mmu_init(dom_reg);
+
+    vm_pt_t *pt = vm_pt_alloc(4096);
+
+    pin_t cached = pin_mk_global(kern_dom, perm_rw_priv, MEM_wb_alloc);
+    pin_t device = pin_mk_device(kern_dom);
+
+    // code: 1 section at 0x0
+    vm_map_sec(pt, 0x0, 0x0, cached);
+
+    // heap: identity-map each 1MB section
+    uint32_t heap_start = (uint32_t)kmalloc_heap_start();
+    uint32_t heap_end   = (uint32_t)kmalloc_heap_end();
+    for (uint32_t addr = heap_start; addr < heap_end; addr += OneMB)
+        vm_map_sec(pt, addr, addr, cached);
+
+    // stacks (STACK_ADDR section may already be covered by heap; harmless)
+    vm_map_sec(pt, STACK_ADDR - OneMB, STACK_ADDR - OneMB, cached);
+    vm_map_sec(pt, INT_STACK_ADDR - OneMB, INT_STACK_ADDR - OneMB, cached);
+
+    // BCM2837 peripherals: full 16MB range at 0x3F000000–0x3FFFFFFF
+    // (EMMC/SD at 0x3F300000, USB at 0x3F980000, etc.)
+    for (uint32_t addr = 0x3F000000; addr < 0x40000000; addr += OneMB)
+        vm_map_sec(pt, addr, addr, device);
+
+    // ARM local peripherals
+    vm_map_sec(pt, 0x40000000, 0x40000000, device);
+
+    vm_mmu_switch(pt, kern_pid, kern_asid);
+    mmu_sync_pte_mods();
+    vm_mmu_enable();
+
+    // enable L1 D-cache, I-cache, branch predictor
+    cp15_ctrl_reg1_t c = cp15_ctrl_reg1_rd();
+    c.C_unified_enable = 1;
+    c.I_icache_enable = 1;
+    c.Z_branch_pred = 1;
+    cp15_ctrl_reg1_wr(c);
+
+    printk("setup_vm: MMU and caches enabled (heap=%dMB)\n",
+           (heap_end - heap_start) / OneMB);
+}
+#endif
 
 void notmain_llama_inference(void) {
     uart_init();
@@ -903,9 +955,11 @@ void notmain_llama_inference(void) {
 
     #if CACHING
     setup_vm();
+    printk("setup_vm: done\n");
     #endif
     pi_sd_init();
-    
+
+    printk("pi_sd_init: done\n");
 
     #if VFP
     enable_vfp();
