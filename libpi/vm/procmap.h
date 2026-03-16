@@ -3,12 +3,18 @@
 #include "pinned-vm.h"
 #include "memmap-default.h"
 
+
+// physical address of our kernel: used to map.
+// probably should tag with the domain?
+// i think just use the page table entry itself.  give
+// some simple routines to make cached, uncached, device
+// memory, readonly, etc
 typedef struct {
     uint32_t addr, nbytes;
+    // need to have privileged.
     enum { MEM_DEVICE, MEM_RW, MEM_RO } type;
     unsigned dom;
 } pr_ent_t;
-
 static inline pr_ent_t
 pr_ent_mk(uint32_t addr, uint32_t nbytes, int type, unsigned dom) {
     demand(nbytes == 1024*1024, only doing sections first);
@@ -24,10 +30,10 @@ pr_ent_mk(uint32_t addr, uint32_t nbytes, int type, unsigned dom) {
 typedef struct {
 #   define MAX_ENT 16
     unsigned n;
-    unsigned dom_ids;
+    unsigned dom_ids;       // all the domain ids in use.
     pr_ent_t map[MAX_ENT];
 } procmap_t;
-
+// add entry <e> to procmap <p>
 static inline void procmap_push(procmap_t *p, pr_ent_t e) {
     assert(p->n < MAX_ENT);
     assert(e.dom < 16);
@@ -35,10 +41,13 @@ static inline void procmap_push(procmap_t *p, pr_ent_t e) {
     p->map[p->n++] = e;
 }
 
+// given a bitvector of which domains are in use,
+// compute the domain permission bits to use
 static inline uint32_t 
 dom_perm(uint32_t doms, unsigned perm) {
     assert(doms);
     assert(doms >> 16 == 0);
+    // [this is manager: not right]
     assert(perm <= 0b11);
     unsigned mask = 0;
     for(unsigned i = 0; i < 16; i++) {
@@ -61,8 +70,20 @@ procmap_lookup(procmap_t *pmap, const void *addr) {
     return 0;
 }
 
-// Default memory map for Pi 3 (Cortex-A53).
-// BCM peripherals at 0x3F000000, local peripherals at 0x40000000.
+// memory map of address space.  each chunk of memory should have an entry.
+// must be aligned to the size of the memory region.
+//
+// we don't seem able to search in the TLB if MMU is off.  
+// 
+// limitations in overall scheme:
+//   - currently just tag everything with the same domain.
+//   - should actually track what sections are allocated.
+//   - basic map of our address space: should add sanity checking that ranges
+//     are not overlapping.   
+//   - our overall vm scheme is janky since still has assumptions encoded.
+//   - in real life would want more control over region attributes.
+//
+// mapping static sections.
 #include "memmap.h"
 static inline procmap_t procmap_default_mk(unsigned dom) {
     enum { MB = 1024 * 1024 };
@@ -93,19 +114,11 @@ static inline procmap_t procmap_default_mk(unsigned dom) {
 
     procmap_push(&p, pr_ent_mk(0x00100000, MB, MEM_RW, dom));
 
-    // the two hardcoded stacks
+    // the two hardcoded stacks we use.
     procmap_push(&p, pr_ent_mk(INT_STACK_ADDR-MB, MB, MEM_RW, dom));
     procmap_push(&p, pr_ent_mk(STACK_ADDR-MB, MB, MEM_RW, dom));
 
     return p;
 }
-
-// TLB lockdown does not exist on Cortex-A53.
-// procmap_pin_on() is not available — use vm_map_kernel() instead.
-#if 0
-static inline void procmap_pin_on(procmap_t *p) {
-    // ...not available on ARMv7 Cortex-A53...
-}
-#endif
 
 #endif

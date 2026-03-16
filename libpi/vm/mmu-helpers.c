@@ -52,10 +52,24 @@ static void control_reg1_check_offsets(void) {
     check_bitfield(struct control_reg1, FA_force_ap,        29,      1);
 }
 
-// ARMv7 relaxed sanity check: many SBO/SBZ fields differ from ARMv6.
-// Only check fields we actually care about.
 static void control_reg1_sanity_check(struct control_reg1 *r) {
-    // caches should be off at init time
+    // SBO: should be 1
+    // assert(r->_unused1 == 0b111);
+    // assert(r->_dt == 1);
+    // assert(r->_it == 1);
+
+    // SBZ: should be 0
+    // assert(r->_sbz0 == 0);
+    // assert(r->_sbz1 == 0);
+    // assert(r->_st == 0);
+
+    // unknown
+    // assert(r->_reserved == 0);
+
+    // allow non-back compat.  
+    // assert(r->XP_pt == 1);
+
+    // we don't enable cache yet.
     assert(!r->L2_enabled);
     assert(!r->I_icache_enable);
     assert(!r->C_unified_enable);
@@ -103,7 +117,7 @@ void tlb_config_print(struct tlb_config *c) {
 }
 
 /*************************************************************************
- * first level pt descriptor — ARMv7 layout
+ * first level pt descriptor
  */
 static void fld_check_valid(fld_t *f) {
     assert(f->NS == 0);
@@ -116,6 +130,7 @@ static void fld_check_valid(fld_t *f) {
 
 
 fld_t fld_mk(void) {
+    // all unused fields can have 0 as default.
     return (fld_t){ .tag = 1, .PXN = 0 };
 }
 
@@ -173,7 +188,7 @@ void vm_pte_print(vm_pt_t *pt, vm_pte_t *pte) {
 }
 
 /************************************************************************
- * the checking harness
+ * the checking harness, such as it is.
  */
 
 void check_vm_structs(void) {

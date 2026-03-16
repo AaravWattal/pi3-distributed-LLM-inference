@@ -1,13 +1,15 @@
 #ifndef __ARM_VM_H__
 #define __ARM_VM_H__
 
+// get the different cp15 data structures.
+// #include "cp15-arm.h"
+
 /**************************************************************************
- * Structures for ARMv7 virtual memory (short-descriptor format).
- * Ported from ARMv6 (ARM1176JZF-S) to ARMv7 (Cortex-A53 AArch32).
+ * Structures for armv7 virtual memory
  *
- * Page table operations: we only handle mapping 1MB sections.
+ * Only handle mapping 1MB sections.
  *
- * ARMv7 section descriptor layout (B3.5.1, Figure B3-4):
+ * armv7 section descriptor layout (B3.5.1, Figure B3-4):
  *
  *   [31:20] Section base address PA[31:20]
  *   [19]    NS (Non-secure bit, write 0 for bare-metal secure)
@@ -33,25 +35,29 @@ typedef struct first_level_descriptor {
         B:1,                // 2:1
         C:1,                // 3:1
         XN:1,               // 4:1      1 = execute never, 0 = can execute
+                            // needs to have XP=1 in ctrl-1.
 
         domain:4,           // 5-8:4    domain id
-        IMP:1,              // 9:1      should be 0
-
+        IMP:1,              // 9:1      should be set to 0 unless imp-defined 
+                            //          functionality is needed.
         AP:2,               // 10-11:2  permissions AP[1:0]
         TEX:3,              // 12-14:3
-        AP2:1,              // 15:1     AP[2] (was APX in ARMv6)
+        AP2:1,              // 15:1     AP[2]
         S:1,                // 16:1     shareable
-        nG:1,               // 17:1     nG=0 ==> global, =1 ==> process specific
-        super:1,            // 18:1     0=section, 1=supersection
-        NS:1,               // 19:1     non-secure bit (write 0 for bare-metal)
-        sec_base_addr:12;   // 20-31    must be aligned
+        nG:1,               // 17:1     nG=0 ==> global mapping, =1 ==> process specific
+        super:1,            // 18:1     selects between section (0) and supersection (1)
+        NS:1,               // 19:1     non-secure bit
+        sec_base_addr:12;   // 20-31.  must be aligned.
 } fld_t;
-_Static_assert(sizeof(fld_t) == 4, "invalid size for fld_t!");
+_Static_assert(sizeof(fld_t) == 4, "Part 0: fill in bitfields (invalid size for fld_t!)");
 
 // B4-9: AP field:  no/access=0b00, r/o=0b10, rw=0b11
 enum {
+    // read-write access
     AP_rw = 0b11,
+    // no access either privileged or user
     AP_no_access = 0b00,
+    // privileged: read only.
     AP_rd_only = 0b10
 };
 
