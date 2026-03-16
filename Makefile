@@ -13,7 +13,9 @@ INC    = -Ilibpi -Ilibpi/include -Ilibpi/vm -Ilibpi/fat32 -Ilibpi/fat32/external
 
 # O0 compile --> 2.16 tok/s, O2 compile --> 10.08 tok/s, O3 doesnt work rn
 # stats taken at time of NEON, caching enabled, multicore exists but no speedup rn
-# NEON brought from 7.82 -> 10.1 tok/s 
+# NEON brought from 7.82 -> 10.08 tok/s
+# precompute RoPE freqs brought from 10.08 -> 10.11 tok/s
+
 OPT_LEVEL ?= -O2
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
             -fno-builtin -fno-stack-protector -fno-exceptions \

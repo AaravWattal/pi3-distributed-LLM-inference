@@ -247,6 +247,16 @@ float* forward(Transformer* transformer, int token, int pos) {
     int head_size = dim / p->n_heads;
     float head_size_inv_sqrt = 1.0f / sqrtf(head_size);
 
+    float rope_cos[dim / 2];
+    float rope_sin[dim / 2];
+    for (int i = 0; i < dim; i += 2) {
+        int head_dim = i % head_size;
+        float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
+        float val = pos * freq;
+        rope_cos[i / 2] = cosf(val);
+        rope_sin[i / 2] = sinf(val);
+    }
+
     // copy the token embedding into x
     float* content_row = w->token_embedding_table + token * dim;
     memcpy(x, content_row, dim*sizeof(*x));
@@ -269,11 +279,8 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         for (int i = 0; i < dim; i+=2) {
-            int head_dim = i % head_size;
-            float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
-            float val = pos * freq;
-            float fcr = cosf(val);
-            float fci = sinf(val);
+            float fcr = rope_cos[i / 2];
+            float fci = rope_sin[i / 2];
             int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
             for (int v = 0; v < rotn; v++) {
                 float* vec = v == 0 ? s->q : s->k; // the vector to rotate (query or key)
