@@ -8,6 +8,8 @@
 #include "pi-sd.h"
 #include "fat32.h"
 #include "mbr.h"
+#include "multicore.h"
+#include <arm_neon.h>
 
 #include "libc/parse-byte-token.c"
 #include "libc/isspace.c"
@@ -216,42 +218,17 @@ void softmax(float* x, int size) {
     }
 }
 
-// optimized matmul with loop unrolling
-void matmul(float* xout, float* x, float* w, int n, int d) {
-    // W (d,n) @ x (n,) -> xout (d,)
-    // by far the most amount of time is spent inside this little function
-    
-    // Simple implementation with loop unrolling for better performance
-    int i = 0;
-    
-    // Process 4 output elements at a time
-    for (; i < d - 3; i += 4) {
-        float val0 = 0.0f;
-        float val1 = 0.0f;
-        float val2 = 0.0f;
-        float val3 = 0.0f;
-        
-        // Go through all input elements
-        for (int j = 0; j < n; j++) {
-            float xj = x[j];  // Load once, use 4 times
-            val0 += w[i * n + j] * xj;
-            val1 += w[(i+1) * n + j] * xj;
-            val2 += w[(i+2) * n + j] * xj;
-            val3 += w[(i+3) * n + j] * xj;
-        }
-        
-        xout[i] = val0;
-        xout[i+1] = val1;
-        xout[i+2] = val2;
-        xout[i+3] = val3;
-    }
-    
-    // Handle remaining elements (less than 4)
-    for (; i < d; i++) {
-        float val = 0.0f;
-        for (int j = 0; j < n; j++) {
-            val += w[i * n + j] * x[j];
-        }
+void matmul(float *xout, float *x, float *w, int n, int d) {
+    for (int i = 0; i < d; i++) {
+        float *row = w + i * n;
+        float32x4_t acc = vdupq_n_f32(0.0f);
+        int j = 0;
+        for (; j <= n - 4; j += 4)
+            acc = vmlaq_f32(acc, vld1q_f32(row + j), vld1q_f32(x + j));
+        float32x2_t s = vadd_f32(vget_high_f32(acc), vget_low_f32(acc));
+        s = vpadd_f32(s, s);
+        float val = vget_lane_f32(s, 0);
+        for (; j < n; j++) val += row[j] * x[j];
         xout[i] = val;
     }
 }
@@ -891,6 +868,7 @@ static inline void enable_vfp(void) {
 // MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
 #define VFP 1
 #define CACHING 1
+#define MULTICORE 1
 #define TIMER_PROFILING 0
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
@@ -948,10 +926,19 @@ static void setup_vm(void) {
 }
 #endif
 
+#if MULTICORE
+static void worker_enable_vfp(void *arg) { (void)arg; enable_vfp(); }
+#endif
+
 void notmain_llama_inference(void) {
     uart_init();
     unsigned long MB = 1024*1024;
     kmalloc_init_set_start((void*)SEG_HEAP, HEAP_SIZE_MB*MB);
+
+    #if MULTICORE
+    multicore_init();
+    printk("multicore: %d cores online\n", NUM_CORES);
+    #endif
 
     #if CACHING
     setup_vm();
@@ -963,6 +950,11 @@ void notmain_llama_inference(void) {
 
     #if VFP
     enable_vfp();
+    #if MULTICORE
+    for (int c = 1; c < NUM_CORES; c++)
+        multicore_call(c, worker_enable_vfp, NULL);
+    printk("multicore: VFP enabled on all cores\n");
+    #endif
     #endif
 
     mbr = mbr_read();

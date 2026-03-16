@@ -1,6 +1,16 @@
 #include "multicore.h"
 #include "rpi.h"
 
+static inline void dc_clean(volatile void *p) {
+    asm volatile("mcr p15, 0, %0, c7, c10, 1" : : "r"(p) : "memory");
+    dsb();
+}
+
+static inline void dc_inv(volatile void *p) {
+    asm volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(p) : "memory");
+    dsb();
+}
+
 #define ARM_BASE 0x40000000
 #define CORE1_MBOX3_SET ARM_BASE + 0x9C
 #define CORE2_MBOX3_SET ARM_BASE + 0xAC
@@ -103,6 +113,11 @@ int multicore_call_async(unsigned core_id, multicore_worker_t func, void* arg) {
     // Increment seq
     cmd_seq[core_id]++;
     dev_barrier();
+
+    dc_clean(&cmd_funcs[core_id]);
+    dc_clean(&cmd_args[core_id]);
+    dc_clean(&cmd_seq[core_id]);
+
     asm volatile("sev");
 
     return MULTICORE_OK;
@@ -131,6 +146,7 @@ int multicore_wait(unsigned core_id) {
 
     while (1) {
         dev_barrier();
+        dc_inv(&cmd_done[core_id]);
 
         if (cmd_done[core_id] == expected_seq) {
             break;
@@ -140,6 +156,22 @@ int multicore_wait(unsigned core_id) {
     }
 
     return MULTICORE_OK;
+}
+
+void multicore_dcache_clean(void *addr, unsigned bytes) {
+    uint32_t p   = (uint32_t)addr & ~(uint32_t)63;
+    uint32_t end = (uint32_t)addr + bytes;
+    for (; p < end; p += 64)
+        asm volatile("mcr p15, 0, %0, c7, c10, 1" : : "r"(p) : "memory");
+    dsb();
+}
+
+void multicore_dcache_clean_inv(void *addr, unsigned bytes) {
+    uint32_t p   = (uint32_t)addr & ~(uint32_t)63;
+    uint32_t end = (uint32_t)addr + bytes;
+    for (; p < end; p += 64)
+        asm volatile("mcr p15, 0, %0, c7, c14, 1" : : "r"(p) : "memory");
+    dsb();
 }
 
 int multicore_wait_all(void) {

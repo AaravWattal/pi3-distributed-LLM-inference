@@ -69,7 +69,7 @@ VM_OBJS = \
 
 APP_OBJS_BASE = main.o libpi/start.o libpi/src/interrupts-asm.o $(VM_OBJS) $(LIBPI_COMMON)
 
-APP_OBJS = $(APP_OBJS_BASE) libpi/src/run.o $(FAT32_OBJS)
+APP_OBJS = $(APP_OBJS_BASE) libpi/src/run.o $(FAT32_OBJS) $(MULTICORE_OBJS)
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 

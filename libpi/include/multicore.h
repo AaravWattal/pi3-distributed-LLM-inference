@@ -37,3 +37,6 @@ int multicore_wait(unsigned core_id);
 
 // Waits for all cores to finish running their functions
 int multicore_wait_all(void);
+
+void multicore_dcache_clean(void *addr, unsigned bytes);
+void multicore_dcache_clean_inv(void *addr, unsigned bytes);
