@@ -1,150 +1,165 @@
-@ Must carefully read B2 of the armv6 manual.  You cannot rely on "well it
-@ worked on my test case": mistakes cause stale data, which may or may not
-@ show up in your test case (likely not) despite being wildly broken.
+@ ARMv7 MMU control assembly routines.
+@ Ported from ARMv6 (ARM1176JZF-S) to ARMv7 (Cortex-A53 AArch32).
 @
-@ Note: Rd is allegedly a read-only parameter to these instructions, but
-@ the manual says SBZ (should be zero).  I think (and the linux source seems
-@ to think) that this means we have to explicitly set it to 0.  Not setting
-@ Rd=0 is an easy mistake to make.  Perhaps is worth building in (Linux does
-@ not, but) --- the cost of an extra mov is negligible given our other 
-@ overheads.
-@
-@ Alot of people put these instructions in inline assembly, wrapped up by 
-@ function calls (e.g., cs107e's MMU code).  This practice is dangerous. 
-@ For example, if you are flushing caches, you cannot be sure that the 
-@ function return, etc does not then reload them, esp w.r.t. the BTB.  I 
-@ think the only safe approach is to put directly in assembly so you are 
-@ guaranteed no branch, indirect jump, load/store happens in between.
-@
-@ A lot of MMU code out there appears pretty broken b/c they don't do enough
-@ flushing operations and/or rely on gcc code generation to not do the above.
+@ Key changes from ARMv6:
+@   - DSB/DMB/ISB are now dedicated instructions
+@   - Whole-cache D-cache ops replaced with set/way function calls
+@   - MMU enable sequence follows ARMv7 ARM §B3.10
+@   - TTBR0 encoding includes IRGN bits for Multiprocessing Extensions
+@   - TTBCR must have EAE=0 explicitly
 
 #include "rpi-asm.h"
 #include "armv6-coprocessor-asm.h"
 
 
-@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-@ many page numbers are in 
-@    armv6-coprocessor-asm.h
-@ and the other armv6-*.h files
-
-// just read the cache type: use C code to figure out if it is unified
-// b6-13, b6-14
+@ just read the cache type: use C code to figure out if it is unified
 MK_FN(get_cache_type)
-    asm_not_implemented()
+    mrc p15, 0, r0, c0, c0, 1
     bx lr
 
-// void reset(void)
-// clear the dcache, icache, tlbs
+@ void mmu_reset(void)
+@ Invalidate TLB, D-cache, and I-cache.
 MK_FN(mmu_reset)
+    push {lr}
+
+    CLR(r0)
     INV_TLB(r0)
-    INV_ALL_CACHES(r0)
 
-    @ B2-19
-    DSB(r0)
-    PREFETCH_FLUSH(r0)
+    bl dcache_inv_by_sw
 
-    bx lr
+    CLR(r0)
+    INV_ICACHE(r0)
 
-// void cp15_domain_ctrl_wr(uint32_t dom_reg);
-// NOTE:
-//   - definitely need to do prefetch flush 
-//   - I don't *think* we need the full cp15 sync: flush_btb, 
-//     dsb, prefetch flush.
-@ MK_FN(cp15_domain_ctrl_wr)
-@     b staff_cp15_domain_ctrl_wr
-@     asm_not_implemented()
-@     bx lr
+    dsb sy
+    isb sy
 
-// void cp15_set_procid_ttbr0(uint32_t proc_and_asid, fld_t *pt);
-// sequence from b2-25
+    pop {pc}
+
+
+@ void cp15_set_procid_ttbr0(uint32_t proc_and_asid, fld_t *pt)
+@ Sequence from ARMv7 ARM §B3.10.4:
+@   r0 = (procid << 8) | asid
+@   r1 = page table base address (14-bit aligned)
 MK_FN(cp15_set_procid_ttbr0)
-    @ 3-129
-    DSB(r0)
+    push {r4, lr}
 
-    @ change ASID to 0
+    dsb sy
+
+    @ zero ASID first to avoid TLB conflicts during switch
     mov r2, #0
     ASID_SET(r2)
-    PREFETCH_FLUSH(r0)
+    isb sy
 
-    @ change TTBR
+    @ write TTBCR = 0 (EAE=0, N=0 — use only TTBR0)
     TTBR_BASE_CTRL_WR(r2)
-    TTBR1_SET(r2)
-    TTBR0_SET(r1)
-    PREFETCH_FLUSH(r0)
+    isb sy
 
-    @ update ASID to new value
-    DSB(r0)
+    @ zero TTBR1 (unused with N=0)
+    TTBR1_SET(r2)
+
+    @ encode TTBR0: base | 0x09 for WB+WA inner/outer cacheable walks
+    @ IRGN[1]=bit[0]=1, RGN=bits[4:3]=0b01 → 0x09
+    orr r4, r1, #0x09
+    TTBR0_SET(r4)
+    isb sy
+
+    @ set ASID + procid
+    dsb sy
     ASID_SET(r0)
 
-    @ flush BTB
-    FLUSH_BTB(r0)
-    PREFETCH_FLUSH(r0)
+    @ flush branch predictor and sync
+    CLR(r2)
+    FLUSH_BTB(r2)
+    dsb sy
+    isb sy
 
-    bx lr
+    pop {r4, pc}
 
-// void mmu_disable_set_asm(cp15_ctrl_reg1_t c);
+
+@ void mmu_disable_set_asm(cp15_ctrl_reg1_t c)
+@ r0 = new SCTLR value with M=0
 MK_FN(mmu_disable_set_asm)
-    @ note: this piece of code is mapped into the same place in both
-    @ MMU-enabled and MMU-disabled so BTB and Prefetch entries work identically
-    @ to both MMU-enable and disable.   Without this requirement I believe is
-    @ very hard to get right (perhaps impossible?) since we cannot flush
-    @ the BTB and prefetch and switch MMU on/off atomically.  thus, would
-    @ flush, but instructions could get fetched before we could disable,
-    @ defeating the purpose.
+    push {r4, lr}
+    mov r4, r0                      @ save SCTLR value in callee-saved r4
 
-    @ invalidate dcache
-    CLEAN_INV_DCACHE(r1)
-    DSB(r1)
+    @ clean + invalidate D-cache before disabling MMU
+    bl dcache_clean_inv_by_sw
+    dsb sy
 
-    @ turn off dcache and mmu together
-    bic r0, r0, #(7)
-    CONTROL_REG1_WR(r0)
-    PREFETCH_FLUSH(r1)
+    @ turn off MMU + caches: clear bits [2:0] (M, A, C)
+    bic r4, r4, #(7)
+    CONTROL_REG1_WR(r4)
+    isb sy
 
-    @ invalidate icache
+    @ invalidate I-cache
+    CLR(r1)
     INV_ICACHE(r1)
-    DSB(r1)
+    dsb sy
 
-    @ flush BTB B2-24
-    FLUSH_BTB(r0)
-    PREFETCH_FLUSH(r0)
+    @ flush branch predictor
+    CLR(r1)
+    FLUSH_BTB(r1)
+    dsb sy
+    isb sy
 
-    bx lr
+    pop {r4, pc}
 
-// void mmu_enable_set_asm(cp15_ctrl_reg1_t c);
+
+@ void mmu_enable_set_asm(cp15_ctrl_reg1_t c)
+@ r0 = new SCTLR value with M=1
+@ Follows ARMv7 ARM §B3.10 required sequence.
 MK_FN(mmu_enable_set_asm)
-    @ TODO not sure if we need this
-    @ disable icache
-    CONTROL_REG1_RD(r1)
-    bic r1, r1, #(1 << 12)
-    CONTROL_REG1_WR(r1)
-    PREFETCH_FLUSH(r1)
+    push {lr}
 
-    @ invalidate icache
+    @ ensure all prior memory operations complete
+    dsb sy
+
+    @ invalidate entire TLB
+    CLR(r1)
+    INV_TLB(r1)
+    dsb sy
+    isb sy
+
+    @ invalidate branch predictor
+    CLR(r1)
+    FLUSH_BTB(r1)
+    dsb sy
+    isb sy
+
+    @ invalidate I-cache
+    CLR(r1)
     INV_ICACHE(r1)
-    DSB(r1)
+    dsb sy
 
-    @ write c to the ctrl register
+    @ write SCTLR with MMU enabled
     CONTROL_REG1_WR(r0)
-    PREFETCH_FLUSH(r1)
+    isb sy                          @ required after MMU enable
 
-    @ flush BTB B2-24
-    FLUSH_BTB(r0)
-    PREFETCH_FLUSH(r0)
+    pop {pc}
 
-    bx lr
 
+@ void mmu_sync_pte_mods(void)
+@ Called after modifying page table entries at runtime.
+@ Ensures new mappings are visible to the TLB walker.
 MK_FN(mmu_sync_pte_mods)
-    @ invalidate dcache and icache
-    CLEAN_INV_DCACHE(r0)
+    push {lr}
+
+    @ clean + invalidate D-cache so PTE writes are visible
+    bl dcache_clean_inv_by_sw
+
+    @ invalidate I-cache
+    CLR(r0)
     INV_ICACHE(r0)
-    DSB(r0)
+    dsb sy
 
-    @ invalidable TLB and flush BTB
+    @ invalidate TLB
+    CLR(r0)
     INV_TLB(r0)
-    FLUSH_BTB(r0)
-    DSB(r0)
-    PREFETCH_FLUSH(r0)
 
-    bx lr
+    @ flush branch predictor
+    CLR(r0)
+    FLUSH_BTB(r0)
+    dsb sy
+    isb sy
+
+    pop {pc}

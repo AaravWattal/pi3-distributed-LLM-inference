@@ -9,7 +9,7 @@ HOST_CC     = gcc
 HOST_CFLAGS = -Wall -Wextra -g -Ilibunix -Ilibpi -Ilibpi/boot
 
 MEMMAP = libpi/memmap
-INC    = -Ilibpi -Ilibpi/include -Ilibpi/fat32 -Ilibpi/fat32/external-code
+INC    = -Ilibpi -Ilibpi/include -Ilibpi/vm -Ilibpi/fat32 -Ilibpi/fat32/external-code
 
 OPT_LEVEL ?= -O2
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
@@ -60,7 +60,14 @@ MULTICORE_OBJS = \
 	libpi/multicore/multicore.o \
 	libpi/multicore/multicore-start.o
 
-APP_OBJS  = main.o libpi/start.o libpi/src/interrupts-asm.o $(FAT32_OBJS) $(LIBPI_COMMON) $(MULTICORE_OBJS)
+VM_OBJS = \
+	libpi/vm/mmu.o \
+	libpi/vm/mmu-helpers.o \
+	libpi/vm/pt-vm.o \
+	libpi/vm/your-mmu-asm.o \
+	libpi/vm/cache-support.o
+
+APP_OBJS  = main.o libpi/start.o libpi/src/interrupts-asm.o $(VM_OBJS) $(LIBPI_COMMON)
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
 ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
 

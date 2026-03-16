@@ -8,7 +8,6 @@
 #include "pi-sd.h"
 #include "fat32.h"
 #include "mbr.h"
-#include "multicore.h"
 
 #include "libc/parse-byte-token.c"
 #include "libc/isspace.c"
@@ -217,71 +216,44 @@ void softmax(float* x, int size) {
     }
 }
 
-// NEON dot-product for one row of W against x, returns the scalar result.
-#ifdef __ARM_NEON
-#include <arm_neon.h>
-static inline float dot_neon(const float* row, const float* x, int n) {
-    float32x4_t acc = vdupq_n_f32(0.0f);
-    int j = 0;
-    for (; j <= n - 4; j += 4)
-        acc = vmlaq_f32(acc, vld1q_f32(row + j), vld1q_f32(x + j));
-    float32x2_t s = vadd_f32(vget_low_f32(acc), vget_high_f32(acc));
-    s = vpadd_f32(s, s);
-    float val = vget_lane_f32(s, 0);
-    for (; j < n; j++) val += row[j] * x[j];
-    return val;
-}
-#else
-static inline float dot_neon(const float* row, const float* x, int n) {
-    float val = 0.0f;
-    for (int j = 0; j < n; j++) val += row[j] * x[j];
-    return val;
-}
-#endif
-
-// Argument block passed to each worker core for a matmul slice.
-typedef struct {
-    float*       xout;
-    const float* x;
-    const float* w;
-    int          n;
-    int          row_start;
-    int          row_end;
-} matmul_args_t;
-
-static void matmul_worker(void* arg) {
-    matmul_args_t* a = (matmul_args_t*)arg;
-    for (int i = a->row_start; i < a->row_end; i++)
-        a->xout[i] = dot_neon(a->w + (long)i * a->n, a->x, a->n);
-}
-
-// Global arg blocks — one per core. Static avoids stack-lifetime issues.
-static matmul_args_t _mm_args[NUM_CORES];
-
-// matmul: W (d,n) @ x (n,) -> xout (d,)
-// Splits the d output rows evenly across all 4 cores.
+// optimized matmul with loop unrolling
 void matmul(float* xout, float* x, float* w, int n, int d) {
-    int chunk = d / NUM_CORES;
-
-    for (int c = 0; c < NUM_CORES; c++) {
-        _mm_args[c].xout      = xout;
-        _mm_args[c].x         = x;
-        _mm_args[c].w         = w;
-        _mm_args[c].n         = n;
-        _mm_args[c].row_start = c * chunk;
-        _mm_args[c].row_end   = (c == NUM_CORES - 1) ? d : (c + 1) * chunk;
+    // W (d,n) @ x (n,) -> xout (d,)
+    // by far the most amount of time is spent inside this little function
+    
+    // Simple implementation with loop unrolling for better performance
+    int i = 0;
+    
+    // Process 4 output elements at a time
+    for (; i < d - 3; i += 4) {
+        float val0 = 0.0f;
+        float val1 = 0.0f;
+        float val2 = 0.0f;
+        float val3 = 0.0f;
+        
+        // Go through all input elements
+        for (int j = 0; j < n; j++) {
+            float xj = x[j];  // Load once, use 4 times
+            val0 += w[i * n + j] * xj;
+            val1 += w[(i+1) * n + j] * xj;
+            val2 += w[(i+2) * n + j] * xj;
+            val3 += w[(i+3) * n + j] * xj;
+        }
+        
+        xout[i] = val0;
+        xout[i+1] = val1;
+        xout[i+2] = val2;
+        xout[i+3] = val3;
     }
-
-    // dispatch cores 1-3 asynchronously
-    multicore_call_async(1, matmul_worker, &_mm_args[1]);
-    multicore_call_async(2, matmul_worker, &_mm_args[2]);
-    multicore_call_async(3, matmul_worker, &_mm_args[3]);
-
-    // core 0 handles its own slice
-    matmul_worker(&_mm_args[0]);
-
-    // wait for worker cores to finish
-    multicore_wait_all();
+    
+    // Handle remaining elements (less than 4)
+    for (; i < d; i++) {
+        float val = 0.0f;
+        for (int j = 0; j < n; j++) {
+            val += w[i * n + j] * x[j];
+        }
+        xout[i] = val;
+    }
 }
 
 float* forward(Transformer* transformer, int token, int pos) {
@@ -938,12 +910,6 @@ void notmain_llama_inference(void) {
     #if VFP
     enable_vfp();
     #endif
-
-    // Bring up cores 1-3 and enable VFP/NEON on each of them.
-    multicore_init();
-    multicore_call(1, (multicore_worker_t)enable_vfp, 0);
-    multicore_call(2, (multicore_worker_t)enable_vfp, 0);
-    multicore_call(3, (multicore_worker_t)enable_vfp, 0);
 
     mbr = mbr_read();
     memcpy(&partition_run, mbr->part_tab1, sizeof(mbr_partition_ent_t));

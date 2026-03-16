@@ -3,6 +3,8 @@
 // simple interface for pinned virtual memory: most of it is 
 // enum and data structures.  you'll build three routines:
 
+#include "rpi.h"
+#include "libc/demand.h"
 #include "mmu.h"
 #include "libc/bit-support.h"
 #include "mem-attr.h"

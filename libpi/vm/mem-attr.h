@@ -2,6 +2,8 @@
 #define __MEM_ATTR_H__
 // common memory attributes.
 
+#include "rpi.h"
+#include "libc/demand.h"
 #include "mmu.h"
 #include "libc/bit-support.h"
 

@@ -3,18 +3,7 @@
 
 #include "pt-vm.h"
 
-#if 0
-#include "mmu.h"
-#endif
-#include "fast-hash32.h"
-
-#if 0
-#define print_field(x, field) do {                   \
-        printk("\t0b%b\t= %s\n", (x)->field, #field);   \
-        if(((x)->field) > 8)                            \
-            printk("\t%x\n", (x)->field);             \
-} while(0)
-#endif
+#include "libc/fast-hash32.h"
 
 static int quiet_p = 0;
 void mmu_be_quiet(void) { quiet_p = 1; }
@@ -22,7 +11,7 @@ void mmu_be_quiet(void) { quiet_p = 1; }
 void hash_print(const char *msg, const void *data, unsigned n) {
     if(quiet_p)
         return;
-    printk("HASH:%s: hash=%x,nbytes=%d\n", msg, fast_hash32(data,n),n);
+    printk("HASH:%s: hash=%x,nbytes=%d\n", msg, fast_hash(data,n),n);
 }
 
 /*************************************************************************
@@ -63,24 +52,10 @@ static void control_reg1_check_offsets(void) {
     check_bitfield(struct control_reg1, FA_force_ap,        29,      1);
 }
 
+// ARMv7 relaxed sanity check: many SBO/SBZ fields differ from ARMv6.
+// Only check fields we actually care about.
 static void control_reg1_sanity_check(struct control_reg1 *r) {
-    // SBO: should be 1
-    assert(r->_unused1 == 0b111);
-    assert(r->_dt == 1);
-    assert(r->_it == 1);
-
-    // SBZ: should be 0
-    assert(r->_sbz0 == 0);
-    assert(r->_sbz1 == 0);
-    assert(r->_st == 0);
-
-    // unknown
-    // assert(r->_reserved == 0);
-
-    // allow non-back compat.  
-    // assert(r->XP_pt == 1);
-
-    // we don't enable cache yet.
+    // caches should be off at init time
     assert(!r->L2_enabled);
     assert(!r->I_icache_enable);
     assert(!r->C_unified_enable);
@@ -112,7 +87,7 @@ void control_reg1_print(struct control_reg1 *r) {
 
 
 /*************************************************************************
- * tlb config helpers: b4-39
+ * tlb config helpers
  */
 static void tlb_config_check_offsets(void) {
     AssertNow(sizeof(struct tlb_config) == 4);
@@ -128,25 +103,20 @@ void tlb_config_print(struct tlb_config *c) {
 }
 
 /*************************************************************************
- * first level pt descriptor
+ * first level pt descriptor — ARMv7 layout
  */
 static void fld_check_valid(fld_t *f) {
-    assert(f->_sbz1 == 0);
-    assert(f->tag == 0b10);
+    assert(f->NS == 0);
+    assert(f->tag == 1);
+    assert(f->PXN == 0);
     assert(f->S == 0);
     assert(f->IMP == 0);
-#if 0
-    assert(f->TEX == 0);
-    assert(f->C == 0);
-    assert(f->B == 0);
-#endif
     assert(f->super == 0);
 }
 
 
 fld_t fld_mk(void) {
-    // all unused fields can have 0 as default.
-    return (fld_t){ .tag = 0b10 };
+    return (fld_t){ .tag = 1, .PXN = 0 };
 }
 
 static void fld_check_offsets(void) {
@@ -156,18 +126,20 @@ static void fld_check_offsets(void) {
     assert(sizeof f == 4);
 
     //                    field     offset  nbits
-    check_bitfield(fld_t, tag,      0,      2);
-    check_bitfield(fld_t, B,        2,      1);
-    check_bitfield(fld_t, C,        3,      1);
-    check_bitfield(fld_t, XN,       4,      1);
-    check_bitfield(fld_t, domain,   5,      4);
-    check_bitfield(fld_t, IMP,      9,      1);
-    check_bitfield(fld_t, AP,       10,     2);
-    check_bitfield(fld_t, TEX,      12,     3);
-    check_bitfield(fld_t, APX,      15,     1);
-    check_bitfield(fld_t, S,        16,     1);
-    check_bitfield(fld_t, nG,       17,     1);
-    check_bitfield(fld_t, super,       18,     1);
+    check_bitfield(fld_t, PXN,     0,      1);
+    check_bitfield(fld_t, tag,     1,      1);
+    check_bitfield(fld_t, B,       2,      1);
+    check_bitfield(fld_t, C,       3,      1);
+    check_bitfield(fld_t, XN,      4,      1);
+    check_bitfield(fld_t, domain,  5,      4);
+    check_bitfield(fld_t, IMP,     9,      1);
+    check_bitfield(fld_t, AP,      10,     2);
+    check_bitfield(fld_t, TEX,     12,     3);
+    check_bitfield(fld_t, AP2,     15,     1);
+    check_bitfield(fld_t, S,       16,     1);
+    check_bitfield(fld_t, nG,      17,     1);
+    check_bitfield(fld_t, super,   18,     1);
+    check_bitfield(fld_t, NS,      19,     1);
     check_bitfield(fld_t, sec_base_addr, 20,     12);
 }
 
@@ -185,7 +157,7 @@ void vm_pte_print(vm_pt_t *pt, vm_pte_t *pte) {
 
     print_field(pte, nG);
     print_field(pte, S);
-    print_field(pte, APX);
+    print_field(pte, AP2);
     print_field(pte, TEX);
     print_field(pte, AP);
     print_field(pte, IMP);
@@ -194,12 +166,14 @@ void vm_pte_print(vm_pt_t *pt, vm_pte_t *pte) {
     print_field(pte, C);
     print_field(pte, B);
     print_field(pte, tag);
+    print_field(pte, PXN);
+    print_field(pte, NS);
 
     fld_check_valid(pte);
 }
 
 /************************************************************************
- * the checking harness, such as it is.
+ * the checking harness
  */
 
 void check_vm_structs(void) {
