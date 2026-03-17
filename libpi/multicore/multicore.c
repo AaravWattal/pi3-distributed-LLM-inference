@@ -114,10 +114,6 @@ int multicore_call_async(unsigned core_id, multicore_worker_t func, void* arg) {
     cmd_seq[core_id]++;
     dev_barrier();
 
-    dc_clean(&cmd_funcs[core_id]);
-    dc_clean(&cmd_args[core_id]);
-    dc_clean(&cmd_seq[core_id]);
-
     asm volatile("sev");
 
     return MULTICORE_OK;

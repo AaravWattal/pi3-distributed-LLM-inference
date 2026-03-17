@@ -7,8 +7,7 @@ dev_barrier:
 @ the armv6 manual.
 .globl dmb
 dmb:
-    mov r0, #0
-    mcr p15, 0, r0, c7, c10, 5
+    dmb sy
     bx lr
 
 @ DSB: used to be called "drain write buffer"
@@ -16,5 +15,5 @@ dmb:
 @ See ch b2.
 .globl dsb
 dsb:
-    mcr p15, 0, r0, c7, c10, 4
+    dsb sy
     bx lr
