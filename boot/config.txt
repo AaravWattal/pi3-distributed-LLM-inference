@@ -3,5 +3,5 @@ kernel=kernel.img
 
 enable_uart=1
 dtoverlay=disable-bt
-core_freq=250
-core_freq_min=250
+core_freq=500
+core_freq_min=500

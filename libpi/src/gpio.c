@@ -24,12 +24,12 @@ enum {
     // Max gpio pin number.
     GPIO_MAX_PIN = 53,
 
-    GPIO_BASE = 0x3F200000,
-    gpio_set0  = (GPIO_BASE + 0x1C),
-    gpio_clr0  = (GPIO_BASE + 0x28),
-    gpio_lev0  = (GPIO_BASE + 0x34)
-
-    // <you will need other values from BCM2835!>
+    GPIO_BASE    = 0x3F200000,
+    gpio_set0    = (GPIO_BASE + 0x1C),
+    gpio_clr0    = (GPIO_BASE + 0x28),
+    gpio_lev0    = (GPIO_BASE + 0x34),
+    GPIO_PUD     = (GPIO_BASE + 0x94),   // pull-up/down enable
+    GPIO_PUDCLK0 = (GPIO_BASE + 0x98),   // pull-up/down clock
 };
 
 //
@@ -145,7 +145,21 @@ void gpio_set_function(unsigned pin, gpio_func_t func) {
     put32(addr, value);
 }
 
-// weird panic: we just infinite loop since we don't have 
+// Set <pin> pull-up/down to off (no pull).
+// BCM2835 p101: write control, wait 150 cycles, clock it in, wait, clear.
+void gpio_pud_off(unsigned pin) {
+    if (pin > GPIO_MAX_PIN)
+        gpio_panic("illegal pin=%d\n", pin);
+
+    PUT32(GPIO_PUD, 0);                          // disable pull-up/down
+    for (volatile int i = 0; i < 150; i++) {}    // wait 150 cycles
+    PUT32(GPIO_PUDCLK0, 1 << pin);               // clock into pin
+    for (volatile int i = 0; i < 150; i++) {}    // wait 150 cycles
+    PUT32(GPIO_PUD, 0);                          // remove control signal
+    PUT32(GPIO_PUDCLK0, 0);                      // remove clock
+}
+
+// weird panic: we just infinite loop since we don't have
 // printk in 2-gpio.
 void panic(const char *msg, ...) {
     (void)msg;

@@ -2,17 +2,36 @@
 #include "gpio.h"
 #include "uart.h"
 
+// pl011 uart registers
+// rpi3 base 0x3F201000
+// bcm2835 chapter 13
 enum {
-    AUX_ENB = 0x3F215004,
-    AUX_MU_IO = 0x3F215040,
-    AUX_MU_IER = 0x3F215044,
-    AUX_MU_IIR = 0x3F215048,
-    AUX_MU_LCR = 0x3F21504C,
-    AUX_MU_MCR = 0x3F215050,
-    AUX_MU_LSR = 0x3F215054,
-    AUX_MU_STAT = 0x3F215064,
-    AUX_MU_BAUD = 0x3F215068,
-    AUX_MU_CTRL = 0x3F215060
+    PL011_DR   = 0x3F201000,   // data register
+    PL011_FR   = 0x3F201018,   // flag register
+    PL011_IBRD = 0x3F201024,   // integer baud-rate divisor
+    PL011_FBRD = 0x3F201028,   // fractional baud-rate divisor
+    PL011_LCRH = 0x3F20102C,   // line control register
+    PL011_CR   = 0x3F201030,   // control register
+    PL011_IMSC = 0x3F201038,   // interrupt mask set/clear
+    PL011_ICR  = 0x3F201044,   // interrupt clear register
+};
+
+enum {
+    FR_BUSY = (1 << 3),   // uart busy transmitting
+    FR_RXFE = (1 << 4),   // rx FIFO empty
+    FR_TXFF = (1 << 5),   // tx FIFO full
+    FR_TXFE = (1 << 7),   // tx FIFO empty + idle
+};
+
+enum {
+    CR_UARTEN = (1 << 0),   // uart enable
+    CR_TXE    = (1 << 8),   // tx enable
+    CR_RXE    = (1 << 9),   // rx enable
+};
+
+enum {
+    LCRH_FEN    = (1 << 4),     // enable fifos
+    LCRH_WLEN_8 = (0x3 << 5),   // 8 bit words
 };
 
 // called first to setup uart to 8n1 115200  baud,
@@ -24,45 +43,38 @@ void uart_init(void) {
     dev_barrier();
 
     // Set up GPIO pins
-    gpio_set_function(14, GPIO_FUNC_ALT5);
-    gpio_set_function(15, GPIO_FUNC_ALT5);
+    gpio_set_function(14, GPIO_FUNC_ALT0);
+    gpio_set_function(15, GPIO_FUNC_ALT0);
+    gpio_pud_off(14);
+    gpio_pud_off(15);
 
     dev_barrier();
 
-    // Enable UART
-    unsigned aux_enb_val = GET32(AUX_ENB);
-    unsigned lower_bit_mask = 0x1;
-    PUT32(AUX_ENB, aux_enb_val | lower_bit_mask);
+    // Disable UART before reconfiguring
+    PUT32(PL011_CR, 0);
 
-    dev_barrier();
+    // Finish pror work
+    while (GET32(PL011_FR) & FR_BUSY)
+        rpi_wait();
 
-    // Disable TX/RX
-    PUT32(AUX_MU_CTRL, 0x0);
-
-    // Clear FIFOs
-    unsigned bits_2_1_on = 0x6;
-    PUT32(AUX_MU_IIR, bits_2_1_on);
-
-    // Disable interrupts
-    PUT32(AUX_MU_IER, 0x0);
+    // Clear interrupts
+    PUT32(PL011_ICR, 0x7FF);
 
     // Set baudrate
-    PUT32(AUX_MU_BAUD, 270);
+    PUT32(PL011_IBRD, 26);
+    PUT32(PL011_FBRD, 3);
 
     // Set 8n1 mode
-    PUT32(AUX_MU_LCR, 0x3);
+    // Enable fifos
+    PUT32(PL011_LCRH, LCRH_WLEN_8 | LCRH_FEN);
 
-    // Clear MCR
-    PUT32(AUX_MU_MCR, 0x0);
+    // Mask all interrupts
+    PUT32(PL011_IMSC, 0);
 
-    // Now enable TX/RX
-    PUT32(AUX_MU_CTRL, 0x3);
+    // Enable UART, TX, RX
+    PUT32(PL011_CR, CR_UARTEN | CR_TXE | CR_RXE);
 
     dev_barrier();
-
-    // NOTE: for cross-checking: make sure write UART 
-    // addresses in order
-
 }
 
 // disable the uart: make sure all bytes have been
@@ -72,10 +84,7 @@ void uart_disable(void) {
 
     uart_flush_tx();
 
-    unsigned aux_enb_val = GET32(AUX_ENB);
-    unsigned lower_bit_mask = 0x1;
-
-    PUT32(AUX_ENB, aux_enb_val & ~lower_bit_mask);
+    PUT32(PL011_CR, 0);
 
     dev_barrier();
 }
@@ -86,25 +95,15 @@ void uart_disable(void) {
 int uart_get8(void) {
     dev_barrier();
 
-    // Wait for new data
-    while (1) {
-        unsigned aux_stat_val = GET32(AUX_MU_STAT);
-        unsigned receive_level = (aux_stat_val & (0x3 << 16)) >> 16;
-
-        if (receive_level > 0) {
-            break;
-        }
-
+    while (GET32(PL011_FR) & FR_RXFE) {
         rpi_wait();
     }
 
-    // Read in data
-    unsigned aux_io_val = GET32(AUX_MU_IO);
-    unsigned lower_8_bit_mask = 0xFF;
+    int c = GET32(PL011_DR) & 0xFF;
 
     dev_barrier();
 
-    return aux_io_val & lower_8_bit_mask;
+    return c;
 }
 
 // returns 1 if the hardware TX (output) FIFO has room
@@ -112,8 +111,7 @@ int uart_get8(void) {
 int uart_can_put8(void) {
     dev_barrier();
 
-    unsigned aux_lsr_val = GET32(AUX_MU_STAT);
-    unsigned can_put8 = (aux_lsr_val & 0x2) >> 1;
+    int can_put8 = !(GET32(PL011_FR) & FR_TXFF);
 
     dev_barrier();
 
@@ -125,18 +123,11 @@ int uart_can_put8(void) {
 int uart_put8(uint8_t c) {
     dev_barrier();
 
-    while (1) {
-        unsigned aux_stat_val = GET32(AUX_MU_STAT);
-        unsigned can_put8 = (aux_stat_val & 0x2) >> 1;
-
-        if (can_put8) {
-            break;
-        }
-
+    while (GET32(PL011_FR) & FR_TXFF) {
         rpi_wait();
     }
 
-    PUT32(AUX_MU_IO, c);
+    PUT32(PL011_DR, c);
 
     dev_barrier();
 
@@ -149,8 +140,7 @@ int uart_put8(uint8_t c) {
 int uart_has_data(void) {
     dev_barrier();
 
-    unsigned aux_stat_val = GET32(AUX_MU_STAT);
-    unsigned has_data = aux_stat_val & 0x1;
+    int has_data = !(GET32(PL011_FR) & FR_RXFE);
 
     dev_barrier();
 
@@ -172,8 +162,8 @@ int uart_get8_async(void) {
 int uart_tx_is_empty(void) {
     dev_barrier();
 
-    unsigned aux_stat_val = GET32(AUX_MU_STAT);
-    unsigned done = (aux_stat_val & (0x1 << 9)) >> 9;
+    unsigned fr = GET32(PL011_FR);
+    int done = (fr & FR_TXFE) && !(fr & FR_BUSY);
 
     dev_barrier();
 

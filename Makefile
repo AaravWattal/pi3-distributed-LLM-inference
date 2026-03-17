@@ -17,7 +17,7 @@ INC    = -Ilibpi -Ilibpi/include -Ilibpi/vm -Ilibpi/fat32 -Ilibpi/fat32/external
 # precompute RoPE freqs brought from 10.08 -> 10.11 tok/s
 
 OPT_LEVEL ?= -O3
-CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
+CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding -ffast-math \
             -fno-builtin -fno-stack-protector -fno-exceptions \
             -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=softfp \
             -mno-unaligned-access -std=gnu99 -DRUN_INFERENCE=$(RUN_INFERENCE) $(INC)
