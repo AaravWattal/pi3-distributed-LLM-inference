@@ -27,6 +27,7 @@ multicore_entry:
 
 set_core_stack:
     @ read core id from mpidr
+    @ arm cortex a53 docs 4.5.2
     mrc p15, 0, r0, c0, c0, 5
     and r0, r0, #3
 

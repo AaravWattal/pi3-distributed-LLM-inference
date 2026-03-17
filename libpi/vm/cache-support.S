@@ -3,6 +3,8 @@
 
 @ armv7 cache maintenance routines.
 @ entire-cache clean/invalidate must iterate by set/way
+@ need this before when MMU is off
+@ armv7 b2.2.6 + b2.2.7
 
 @ -------------------------------------------------------
 @ void dcache_inv_by_sw(void)

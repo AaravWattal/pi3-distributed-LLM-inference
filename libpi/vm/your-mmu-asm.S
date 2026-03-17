@@ -103,7 +103,6 @@ MK_FN(mmu_disable_set_asm)
 
 
 // void mmu_enable_set_asm(cp15_ctrl_reg1_t c);
-// armv7 b3.10
 MK_FN(mmu_enable_set_asm)
     push {lr}
 
