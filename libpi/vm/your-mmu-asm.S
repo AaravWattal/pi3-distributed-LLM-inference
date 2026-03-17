@@ -75,6 +75,7 @@ MK_FN(cp15_set_procid_ttbr0)
 
 
 // void mmu_disable_set_asm(cp15_ctrl_reg1_t c);
+// armv7 b2.2.6, b2.2.9, 
 MK_FN(mmu_disable_set_asm)
     push {r4, lr}
     mov r4, r0
@@ -103,6 +104,7 @@ MK_FN(mmu_disable_set_asm)
 
 
 // void mmu_enable_set_asm(cp15_ctrl_reg1_t c);
+// armv7 b2.2.6, b2.2.9
 MK_FN(mmu_enable_set_asm)
     push {lr}
 

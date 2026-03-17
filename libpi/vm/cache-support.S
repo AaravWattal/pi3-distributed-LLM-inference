@@ -117,6 +117,7 @@ MK_FN(flush_caches)
 
     CLR(r0)
     FLUSH_BTB(r0)
+    dsb sy
     isb sy
 
     pop {pc}
