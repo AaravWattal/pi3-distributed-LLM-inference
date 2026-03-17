@@ -1031,6 +1031,10 @@ static void worker_enable_vfp(void *arg) { (void)arg; enable_vfp(); }
 #endif
 
 void notmain_llama_inference(void) {
+    #if VFP
+    enable_vfp();
+    #endif
+
     uart_init();
     unsigned long MB = 1024*1024;
     kmalloc_init_set_start((void*)SEG_HEAP, HEAP_SIZE_MB*MB);
@@ -1038,10 +1042,6 @@ void notmain_llama_inference(void) {
     pi_sd_init();
 
     printk("pi_sd_init: done\n");
-
-    #if VFP
-    enable_vfp();
-    #endif
 
     mbr = mbr_read();
     memcpy(&partition_run, mbr->part_tab1, sizeof(mbr_partition_ent_t));

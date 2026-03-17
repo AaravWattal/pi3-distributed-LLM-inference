@@ -16,7 +16,7 @@ INC    = -Ilibpi -Ilibpi/include -Ilibpi/vm -Ilibpi/fat32 -Ilibpi/fat32/external
 # NEON brought from 7.82 -> 10.08 tok/s
 # precompute RoPE freqs brought from 10.08 -> 10.11 tok/s
 
-OPT_LEVEL ?= -O2
+OPT_LEVEL ?= -O3
 CFLAGS    = $(OPT_LEVEL) -Wall -Wextra -nostdlib -nostartfiles -ffreestanding \
             -fno-builtin -fno-stack-protector -fno-exceptions \
             -marm -mcpu=cortex-a53 -mfpu=neon-fp-armv8 -mfloat-abi=softfp \
@@ -89,6 +89,9 @@ $(ALL_OBJS): $(DEPS)
 
 %.o: %.c $(DEPS)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+libpi/cstart.o: libpi/cstart.c $(DEPS)
+	$(CC) $(CFLAGS) -fno-tree-vectorize -c $< -o $@
 
 %.o: %.S $(DEPS)
 	$(CC) -c $(ASFLAGS) $< -o $@
