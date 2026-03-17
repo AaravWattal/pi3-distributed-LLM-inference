@@ -27,6 +27,17 @@
 
 #define SEG_HEAP     (1024 * 1024)
 #define HEAP_SIZE_MB FAT32_HEAP_MB
+
+// ------ controls here -------
+// MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
+#define VFP 1
+#define CACHING 1
+#define MULTICORE 1
+#define TIMER_PROFILING 0
+#define CHECKPOINT_PATH "MODEL.BIN"
+#define TOKENIZER_PATH "T.BIN"
+#define STEPS 256
+
 typedef struct {
     int dim; // transformer dimension
     int hidden_dim; // for ffn layers
@@ -218,7 +229,60 @@ void softmax(float* x, int size) {
     }
 }
 
+#if MULTICORE
+typedef struct {
+    float *xout;
+    float *x;
+    float *w;
+    int n;
+    int d_start;
+    int d_end;
+} MatmulArgs;
+
+static MatmulArgs matmul_args[NUM_CORES];
+
+static void matmul_worker(void *varg) {
+    MatmulArgs *a = (MatmulArgs *)varg;
+
+    for (int i = a->d_start; i < a->d_end; i++) {
+        float *row = a->w + i * a->n;
+        float32x4_t acc = vdupq_n_f32(0.0f);
+        int j = 0;
+        for (; j <= a->n - 4; j += 4)
+            acc = vmlaq_f32(acc, vld1q_f32(row + j), vld1q_f32(a->x + j));
+        float32x2_t s = vadd_f32(vget_high_f32(acc), vget_low_f32(acc));
+        s = vpadd_f32(s, s);
+        float val = vget_lane_f32(s, 0);
+        for (; j < a->n; j++) val += row[j] * a->x[j];
+        a->xout[i] = val;
+    }
+}
+#endif
+
 void matmul(float *xout, float *x, float *w, int n, int d) {
+#if MULTICORE
+    // split output rows evenly across all cores
+    int chunk = (d + NUM_CORES - 1) / NUM_CORES;
+    for (int c = 0; c < NUM_CORES; c++) {
+        int ds = c * chunk;
+        int de = ds + chunk;
+        if (ds > d) ds = d;
+        if (de > d) de = d;
+        matmul_args[c] = (MatmulArgs){ xout, x, w, n, ds, de };
+    }
+
+    // dispatch cores
+    for (int c = 1; c < NUM_CORES; c++) {
+        multicore_call_async(c, matmul_worker, &matmul_args[c]);
+    }
+
+    // core 0 workload
+    matmul_worker(&matmul_args[0]);
+
+    // wait for worker cores to finish
+    multicore_wait_all();
+
+#else
     for (int i = 0; i < d; i++) {
         float *row = w + i * n;
         float32x4_t acc = vdupq_n_f32(0.0f);
@@ -231,6 +295,7 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
         for (; j < n; j++) val += row[j] * x[j];
         xout[i] = val;
     }
+#endif
 }
 
 float* forward(Transformer* transformer, int token, int pos) {
@@ -411,6 +476,7 @@ void build_tokenizer(Tokenizer* t, char* tokenizer_path, int vocab_size) {
     if (!file || !file->data) {
         panic("couldn't load %s\n", tokenizer_path);
     }
+
     char *cursor = file->data;
     if (file->n_data < sizeof(int)) {
         panic("failed read\n");
@@ -871,19 +937,10 @@ static inline void enable_vfp(void) {
     prefetch_flush();
 }
 
-
-// ------ controls here -------
-// MUST ALSO CHANGE MAKEFILE FOR VFP!!!!!
-#define VFP 1
-#define CACHING 1
-#define MULTICORE 1
-#define TIMER_PROFILING 0
-#define CHECKPOINT_PATH "MODEL.BIN"
-#define TOKENIZER_PATH "T.BIN"
-#define STEPS 10
-
 #if CACHING
 void flush_caches(void);
+
+static vm_pt_t *shared_pt;
 
 static void setup_vm(void) {
     enum { OneMB = 1024 * 1024 };
@@ -910,19 +967,20 @@ static void setup_vm(void) {
     vm_map_sec(pt, STACK_ADDR - OneMB, STACK_ADDR - OneMB, cached);
     vm_map_sec(pt, INT_STACK_ADDR - OneMB, INT_STACK_ADDR - OneMB, cached);
 
-    // BCM2837 peripherals: full 16MB range at 0x3F000000–0x3FFFFFFF
-    // (EMMC/SD at 0x3F300000, USB at 0x3F980000, etc.)
+    // bcm2837 peripherals: 16mb range
     for (uint32_t addr = 0x3F000000; addr < 0x40000000; addr += OneMB)
         vm_map_sec(pt, addr, addr, device);
 
-    // ARM local peripherals
+    // arm local peripherals
     vm_map_sec(pt, 0x40000000, 0x40000000, device);
+
+    shared_pt = pt;
 
     vm_mmu_switch(pt, kern_pid, kern_asid);
     mmu_sync_pte_mods();
     vm_mmu_enable();
 
-    // enable L1 D-cache, I-cache, branch predictor
+    // enable L1 dcache, icache, branch predictor
     cp15_ctrl_reg1_t c = cp15_ctrl_reg1_rd();
     c.C_unified_enable = 1;
     c.I_icache_enable = 1;
@@ -931,6 +989,25 @@ static void setup_vm(void) {
 
     printk("setup_vm: MMU and caches enabled (heap=%dMB)\n",
            (heap_end - heap_start) / OneMB);
+}
+
+static void worker_enable_mmu(void* arg) {
+    (void)arg;
+
+    enum { kern_dom = 1, kern_asid = 1, kern_pid = 0x140e };
+
+    uint32_t dom_reg = DOM_client << (kern_dom * 2);
+    vm_mmu_init(dom_reg);
+
+    vm_mmu_switch(shared_pt, kern_pid, kern_asid);
+    mmu_sync_pte_mods();
+    vm_mmu_enable();
+
+    cp15_ctrl_reg1_t c = cp15_ctrl_reg1_rd();
+    c.C_unified_enable = 1;
+    c.I_icache_enable = 1;
+    c.Z_branch_pred = 1;
+    cp15_ctrl_reg1_wr(c);
 }
 #endif
 
@@ -943,26 +1020,12 @@ void notmain_llama_inference(void) {
     unsigned long MB = 1024*1024;
     kmalloc_init_set_start((void*)SEG_HEAP, HEAP_SIZE_MB*MB);
 
-    #if MULTICORE
-    multicore_init();
-    printk("multicore: %d cores online\n", NUM_CORES);
-    #endif
-
-    #if CACHING
-    setup_vm();
-    printk("setup_vm: done\n");
-    #endif
     pi_sd_init();
 
     printk("pi_sd_init: done\n");
 
     #if VFP
     enable_vfp();
-    #if MULTICORE
-    for (int c = 1; c < NUM_CORES; c++)
-        multicore_call(c, worker_enable_vfp, NULL);
-    printk("multicore: VFP enabled on all cores\n");
-    #endif
     #endif
 
     mbr = mbr_read();
@@ -1020,6 +1083,29 @@ void notmain_llama_inference(void) {
     gprof_init();
     // printk("gonna enable ints globally!\n");
     enable_interrupts();
+    #endif
+
+    #if MULTICORE
+    multicore_init();
+    printk("multicore: %d cores online\n", NUM_CORES);
+    #if VFP
+    for (int c = 1; c < NUM_CORES; c++)
+        multicore_call(c, worker_enable_vfp, NULL);
+    printk("multicore: VFP enabled on all cores\n");
+    #endif
+    #endif
+
+    #if CACHING
+    setup_vm();
+    printk("setup_vm: done on core0\n");
+
+    #if MULTICORE
+    for (int c = 1; c < NUM_CORES; c++) {
+        multicore_call(c, worker_enable_mmu, NULL);
+    }
+    #endif
+
+    printk("setup_vm: done for all cores\n");
     #endif
 
     // run!

@@ -16,6 +16,13 @@ _start:
     cmp r1, #0x1a              @ 0x1a = HYP_MODE
     bne svc
 
+    @ Enable cache coherency
+    @ arm a53-cortex docs 4.5.77
+    mrrc p15, 1, r0, r1, c15   @ read CPUECTLR into r0 (low), r1 (high)
+    orr r0, r0, #(1 << 6)      @ set SMPEN bit
+    mcrr p15, 1, r0, r1, c15   @ write back
+    isb
+
     @ Clear HCR so IRQs are not trapped
     mov r0, #0
     mcr p15, 4, r0, c1, c1, 0
