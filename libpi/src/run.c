@@ -246,14 +246,29 @@ static void matmul_worker(void *varg) {
 
     for (int i = a->d_start; i < a->d_end; i++) {
         float *row = a->w + i * a->n;
+
+        // prefetch next row
+        // if (i + 1 < a->d_end) {
+        //     __builtin_prefetch(a->w + (i + 1) * a->n, 0, 3);
+        // }
+
         float32x4_t acc = vdupq_n_f32(0.0f);
+
         int j = 0;
-        for (; j <= a->n - 4; j += 4)
+
+        for (; j <= a->n - 4; j += 4) {
             acc = vmlaq_f32(acc, vld1q_f32(row + j), vld1q_f32(a->x + j));
+        }
+
         float32x2_t s = vadd_f32(vget_high_f32(acc), vget_low_f32(acc));
         s = vpadd_f32(s, s);
+
         float val = vget_lane_f32(s, 0);
-        for (; j < a->n; j++) val += row[j] * a->x[j];
+
+        for (; j < a->n; j++) {
+            val += row[j] * a->x[j];
+        }
+        
         a->xout[i] = val;
     }
 }
