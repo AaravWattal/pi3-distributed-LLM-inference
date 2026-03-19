@@ -238,21 +238,15 @@ typedef struct {
     int n;
     int d_start;
     int d_end;
-} MatmulArgs;
+    char _pad[64 - 24];
+} __attribute__((aligned(64))) MatmulArgs;
 
-static MatmulArgs matmul_args[NUM_CORES];
-
-static void matmul_worker(void *varg) {
+static MatmulArgs matmul_args[NUM_CORES] __attribute__((aligned(64)));
+static void __attribute__((noinline)) matmul_worker(void *varg) {
     MatmulArgs *a = (MatmulArgs *)varg;
 
     for (int i = a->d_start; i < a->d_end; i++) {
         float *row = a->w + i * a->n;
-
-        // prefetch next row
-        // if (i + 1 < a->d_end) {
-        //     __builtin_prefetch(a->w + (i + 1) * a->n, 0, 3);
-        // }
-
         float32x4_t acc = vdupq_n_f32(0.0f);
 
         int j = 0;
@@ -287,11 +281,19 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
         matmul_args[c] = (MatmulArgs){ xout, x, w, n, ds, de };
     }
 
-    matmul_worker(&matmul_args[0]);
+    dsb();
+
     for (int c = 1; c < NUM_CORES; c++) {
-        if (matmul_args[c].d_start < matmul_args[c].d_end)
-            multicore_call(c, matmul_worker, &matmul_args[c]);
+        if (matmul_args[c].d_start < matmul_args[c].d_end) {
+            int rc = multicore_call_async(c, matmul_worker, &matmul_args[c]);
+            if (rc != MULTICORE_OK)
+                panic("matmul: async(core=%d) failed: %d\n", c, rc);
+        }
     }
+
+    matmul_worker(&matmul_args[0]);
+    multicore_wait_all();
+    dsb();
 
 #else
     for (int i = 0; i < d; i++) {
@@ -1008,7 +1010,8 @@ static void worker_enable_mmu(void* arg) {
     enum { kern_dom = 1, kern_asid = 1, kern_pid = 0x140e };
 
     uint32_t dom_reg = DOM_client << (kern_dom * 2);
-    vm_mmu_init(dom_reg);
+
+    domain_access_ctrl_set(dom_reg);
 
     vm_mmu_switch(shared_pt, kern_pid, kern_asid);
     mmu_sync_pte_mods();
@@ -1032,6 +1035,17 @@ void notmain_llama_inference(void) {
     #endif
 
     uart_init();
+
+    // Install exception vectors so data aborts are visible
+    {
+        extern uint32_t _interrupt_table[];
+        extern uint32_t _interrupt_table_end[];
+        uint32_t *dst = (void *)0;
+        uint32_t *src = _interrupt_table;
+        unsigned n = _interrupt_table_end - src;
+        for (unsigned i = 0; i < n; i++)
+            dst[i] = src[i];
+    }
     unsigned long MB = 1024*1024;
     kmalloc_init_set_start((void*)SEG_HEAP, HEAP_SIZE_MB*MB);
 
@@ -1110,19 +1124,52 @@ void notmain_llama_inference(void) {
     setup_vm();
     printk("setup_vm: done on core0\n");
 
-    #if MULTICORE
-    for (int c = 1; c < NUM_CORES; c++) {
-        multicore_call(c, worker_enable_mmu, NULL);
-    }
-    #endif
-
-    multicore_coherent = 1;
-    printk("setup_vm: done for all cores\n");
-
     extern void dcache_clean_inv_by_sw(void);
     dcache_clean_inv_by_sw();
     dsb();
     printk("dcache flush: done\n");
+
+    #if MULTICORE
+    for (int c = 1; c < NUM_CORES; c++) {
+        multicore_call(c, worker_enable_mmu, NULL);
+    }
+
+    multicore_coherent = 1;
+    printk("setup_vm: done for all cores\n");
+
+    // --- diagnostic: test simultaneous dispatch ---
+    {
+        int d = transformer.config.dim;
+        int n = d;
+        float *x = transformer.state.x;
+        float *w = transformer.weights.wq;
+        float *xout = transformer.state.xb;
+        int chunk = (d + NUM_CORES - 1) / NUM_CORES;
+        chunk = (chunk + 15) & ~15;
+
+        for (int iter = 0; iter < 200; iter++) {
+            for (int c = 0; c < NUM_CORES; c++) {
+                int ds = c * chunk, de = ds + chunk;
+                if (ds > d) ds = d;
+                if (de > d) de = d;
+                matmul_args[c] = (MatmulArgs){ xout, x, w, n, ds, de };
+            }
+            dsb();
+            for (int c = 1; c < NUM_CORES; c++) {
+                if (matmul_args[c].d_start < matmul_args[c].d_end) {
+                    int rc = multicore_call_async(c, matmul_worker, &matmul_args[c]);
+                    if (rc != MULTICORE_OK)
+                        printk("FAIL iter=%d core=%d rc=%d\n", iter, c, rc);
+                }
+            }
+            matmul_worker(&matmul_args[0]);
+            multicore_wait_all();
+            if (iter % 50 == 0)
+                printk("test: iter %d OK\n", iter);
+        }
+        printk("test: 200 iterations with core0 simultaneous OK\n");
+    }
+    #endif
     #endif
 
     // run!

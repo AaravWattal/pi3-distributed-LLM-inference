@@ -1,18 +1,16 @@
 .global multicore_entry
 multicore_entry:
-    @ check in hyp mode
-    @ if so, enable cache coherency
-    mrs r1, cpsr
-    and r1, r1, #0x1f
-    cmp r1, #0x1a              @ HYP mode?
-    bne set_core_stack         @ already in SVC, skip
-
-    @ Enable hardware coherency
-    @ arm a53-cortex docs 4.5.77
+    @ Always enable SMPEN for cache coherency, regardless of mode
     mrrc p15, 1, r2, r3, c15
     orr r2, r2, #(1 << 6)
     mcrr p15, 1, r2, r3, c15
     isb
+
+    @ check in hyp mode
+    mrs r1, cpsr
+    and r1, r1, #0x1f
+    cmp r1, #0x1a              @ HYP mode?
+    bne set_core_stack         @ already in SVC, skip
 
     @ Clear HCR
     mov r1, #0

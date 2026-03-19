@@ -56,11 +56,8 @@ void multicore_main(unsigned core_id) {
     while (1) {
         while (1) {
             dev_barrier();
-
-            if (cmd_seq[core_id].v != cmd_done[core_id].v) {
+            if (cmd_seq[core_id].v != cmd_done[core_id].v)
                 break;
-            }
-
             asm volatile("wfe");
         }
 
@@ -142,7 +139,6 @@ int multicore_check_done(unsigned core_id) {
     return cmd_seq[core_id].v == cmd_done[core_id].v;
 }
 
-//blocks until core has finished command
 int multicore_wait(unsigned core_id) {
     if (!is_core_id_valid(core_id)) {
         return MULTICORE_ERR_CORE;
@@ -152,7 +148,7 @@ int multicore_wait(unsigned core_id) {
 
     uint32_t expected_seq = cmd_seq[core_id].v;
 
-    while (1) {
+    for (unsigned i = 0; ; i++) {
         if (!multicore_coherent) {
             dev_barrier();
             dc_inv(&cmd_done[core_id].v);
@@ -164,7 +160,12 @@ int multicore_wait(unsigned core_id) {
             break;
         }
 
-        asm volatile("wfe");
+        if (i > 50000000) {
+            printk("HANG: core %d stuck: seq=%d done=%d func=0x%x arg=0x%x\n",
+                   core_id, cmd_seq[core_id].v, cmd_done[core_id].v,
+                   cmd_funcs[core_id].v, cmd_args[core_id].v);
+            i = 0;
+        }
     }
 
     return MULTICORE_OK;
