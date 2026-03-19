@@ -35,6 +35,7 @@ int comm_recv_msg(CommHeader *hdr, void *buf, uint32_t buf_max);
 void comm_signal_ready(void);
 void comm_signal_busy(void);
 void comm_wait_ready(void);
+void comm_wait_busy(void);
 
 void comm_send_bytes(const void *buf, uint32_t len);
 void comm_recv_bytes(void *buf, uint32_t len);

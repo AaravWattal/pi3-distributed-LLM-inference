@@ -916,6 +916,8 @@ void generate_master(Transformer *transformer, Tokenizer *tokenizer, Sampler *sa
 
         forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
 
+        comm_wait_ready();
+
         uint32_t meta[3];
         meta[0] = (uint32_t)token;
         meta[1] = (uint32_t)pos;
@@ -923,6 +925,7 @@ void generate_master(Transformer *transformer, Tokenizer *tokenizer, Sampler *sa
         comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
         comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
 
+        comm_wait_busy();
         comm_wait_ready();
 
         CommHeader hdr;
@@ -967,7 +970,7 @@ void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
     uint16_t seq = 0;
 
     for (int pos = 0; pos < steps; pos++) {
-        comm_signal_busy();
+        comm_signal_ready();
 
         CommHeader hdr;
         int rc = comm_recv_msg(&hdr, x, dim * sizeof(float));
@@ -978,6 +981,8 @@ void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
         rc = comm_recv_msg(&hdr, meta, sizeof(meta));
         if (rc != 0)
             panic("worker: recv meta failed rc=%d\n", rc);
+
+        comm_signal_busy();
 
         int token = (int)meta[0];
         int actual_pos = (int)meta[1];

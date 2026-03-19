@@ -104,6 +104,11 @@ void comm_wait_ready(void) {
     dev_barrier();
 }
 
+void comm_wait_busy(void) {
+    while (gpio_read(COMM_PIN_READY) != 0) {}
+    dev_barrier();
+}
+
 void comm_send_bytes(const void *buf, uint32_t len) {
     const uint8_t *p = (const uint8_t *)buf;
     if (g_role) {
