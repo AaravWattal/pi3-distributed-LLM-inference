@@ -909,29 +909,56 @@ void generate_master(Transformer *transformer, Tokenizer *tokenizer, Sampler *sa
     int pos = 0;
     uint16_t seq = 0;
 
+    printk("prefill: %d prompt tokens\n", num_prompt_tokens);
+    while (pos < num_prompt_tokens - 1) {
+        float *x = transformer->state.x;
+        float* content_row = transformer->weights.token_embedding_table + token * dim;
+        memcpy(x, content_row, dim * sizeof(float));
+
+        forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
+        printk("prefill pos=%d done\n", pos);
+
+        comm_wait_ready();
+
+        uint32_t meta[3];
+        meta[0] = (uint32_t)token;
+        meta[1] = (uint32_t)pos;
+        meta[2] = (uint32_t)prompt_tokens[pos + 1];
+        comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
+        comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
+
+        comm_wait_busy();
+
+        token = prompt_tokens[pos + 1];
+        pos++;
+        seq++;
+    }
+
+    printk("generation phase, pos=%d\n", pos);
     while (pos < steps) {
         float *x = transformer->state.x;
         float* content_row = transformer->weights.token_embedding_table + token * dim;
         memcpy(x, content_row, dim * sizeof(float));
 
         forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
-        printk("DBG: forward done pos=%d\n", pos);
+        printk("gen pos=%d fwd done\n", pos);
 
         comm_wait_ready();
-        printk("DBG: worker ready, sending activation\n");
+        printk("gen pos=%d ready\n", pos);
 
         uint32_t meta[3];
         meta[0] = (uint32_t)token;
         meta[1] = (uint32_t)pos;
-        meta[2] = (uint32_t)(pos < num_prompt_tokens - 1 ? prompt_tokens[pos + 1] : 0xFFFFFFFF);
+        meta[2] = (uint32_t)0xFFFFFFFF;
         comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
-        printk("DBG: activation sent\n");
+        printk("gen pos=%d act sent\n", pos);
         comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
-        printk("DBG: meta sent, waiting busy\n");
+        printk("gen pos=%d meta sent\n", pos);
 
         comm_wait_busy();
-        printk("DBG: worker busy, waiting ready\n");
+        printk("gen pos=%d busy\n", pos);
         comm_wait_ready();
+        printk("gen pos=%d ready2\n", pos);
         delay_us(50);
 
         CommHeader hdr;
@@ -971,8 +998,6 @@ void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
     Config* p = &transformer->config;
     int dim = p->dim;
     float *x = transformer->state.x;
-
-    int prev_token = 0;
     uint16_t seq = 0;
 
     for (int pos = 0; pos < steps; pos++) {
@@ -990,22 +1015,20 @@ void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
 
         comm_signal_busy();
 
-        int token = (int)meta[0];
         int actual_pos = (int)meta[1];
         int forced_next = (int)meta[2];
 
         forward_layers(transformer, actual_pos, SPLIT_LAYER, p->n_layers, x);
 
+        if (forced_next != (int)0xFFFFFFFF) {
+            seq++;
+            continue;
+        }
+
         rmsnorm(x, x, transformer->weights.rms_final_weight, dim);
         matmul(transformer->state.logits, x, transformer->weights.wcls, dim, p->vocab_size);
 
-        int next;
-        if (forced_next != (int)0xFFFFFFFF) {
-            next = forced_next;
-        } else {
-            next = sample(sampler, transformer->state.logits);
-        }
-
+        int next = sample(sampler, transformer->state.logits);
         int is_eos = (next == 1) ? 1 : 0;
 
         uint32_t result[2];
@@ -1015,11 +1038,8 @@ void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
         comm_send_msg(MSG_TOKEN, seq, (uint16_t)actual_pos, result, sizeof(result));
 
         if (is_eos) break;
-
-        prev_token = token;
         seq++;
     }
-    (void)prev_token;
 }
 
 #endif // PI_DISTRIBUTED
