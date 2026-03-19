@@ -40,3 +40,6 @@ int multicore_wait_all(void);
 
 void multicore_dcache_clean(void *addr, unsigned bytes);
 void multicore_dcache_clean_inv(void *addr, unsigned bytes);
+void multicore_dcache_inv(void *addr, unsigned bytes);
+
+extern volatile int multicore_coherent;

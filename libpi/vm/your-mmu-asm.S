@@ -57,7 +57,7 @@ MK_FN(cp15_set_procid_ttbr0)
     TTBR1_SET(r2)
 
     @ encode TTBR0
-    orr r4, r1, #0x09
+    orr r4, r1, #0x0B
     TTBR0_SET(r4)
     isb sy
 

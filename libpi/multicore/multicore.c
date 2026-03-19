@@ -16,11 +16,15 @@ static inline void dc_inv(volatile void *p) {
 #define CORE2_MBOX3_SET ARM_BASE + 0xAC
 #define CORE3_MBOX3_SET ARM_BASE + 0xBC
 
-volatile uint32_t core_online[NUM_CORES];
-volatile uint32_t cmd_funcs[NUM_CORES];
-volatile uint32_t cmd_args[NUM_CORES];
-volatile uint32_t cmd_seq[NUM_CORES];
-volatile uint32_t cmd_done[NUM_CORES];
+typedef struct { volatile uint32_t v; uint32_t _pad[15]; } cacheline_t;
+
+cacheline_t core_online[NUM_CORES] __attribute__((aligned(64)));
+cacheline_t cmd_funcs[NUM_CORES]   __attribute__((aligned(64)));
+cacheline_t cmd_args[NUM_CORES]    __attribute__((aligned(64)));
+cacheline_t cmd_seq[NUM_CORES]     __attribute__((aligned(64)));
+cacheline_t cmd_done[NUM_CORES]    __attribute__((aligned(64)));
+
+volatile int multicore_coherent = 0;
 
 static int is_core_id_valid(unsigned core_id) {
     return core_id > 0 && core_id < NUM_CORES;
@@ -35,9 +39,9 @@ void multicore_init() {
     asm volatile("sev");
 
     // wait for everyone to get online
-    while (core_online[1] == 0 || core_online[2] == 0 || core_online[3] == 0) {
+    while (core_online[1].v == 0 || core_online[2].v == 0 || core_online[3].v == 0) {
         dev_barrier();
-        if (core_online[1] != 0 && core_online[2] != 0 && core_online[3] != 0)
+        if (core_online[1].v != 0 && core_online[2].v != 0 && core_online[3].v != 0)
             break;
         asm volatile("wfe");
     }
@@ -45,7 +49,7 @@ void multicore_init() {
 
 // signals other cores are ready to receive commands, and then waits for commands
 void multicore_main(unsigned core_id) {
-    core_online[core_id] = 1;
+    core_online[core_id].v = 1;
     dev_barrier();
     asm volatile("sev");
 
@@ -53,7 +57,7 @@ void multicore_main(unsigned core_id) {
         while (1) {
             dev_barrier();
 
-            if (cmd_seq[core_id] != cmd_done[core_id]) {
+            if (cmd_seq[core_id].v != cmd_done[core_id].v) {
                 break;
             }
 
@@ -61,9 +65,9 @@ void multicore_main(unsigned core_id) {
         }
 
         dev_barrier();
-        uint32_t seq = cmd_seq[core_id];
-        uint32_t func_addr = cmd_funcs[core_id];
-        uint32_t arg = cmd_args[core_id];
+        uint32_t seq = cmd_seq[core_id].v;
+        uint32_t func_addr = cmd_funcs[core_id].v;
+        uint32_t arg = cmd_args[core_id].v;
 
         if (func_addr != 0) {
             multicore_worker_t func = (multicore_worker_t)func_addr;
@@ -71,7 +75,7 @@ void multicore_main(unsigned core_id) {
         }
 
         dev_barrier();
-        cmd_done[core_id] = seq;
+        cmd_done[core_id].v = seq;
         dev_barrier();
         asm volatile("sev");
     }
@@ -98,25 +102,29 @@ int multicore_call_async(unsigned core_id, multicore_worker_t func, void* arg) {
 
     dev_barrier();
 
-    if (core_online[core_id] == 0) {
+    if (core_online[core_id].v == 0) {
         return MULTICORE_ERR_READY;
     }
 
-    if (cmd_seq[core_id] != cmd_done[core_id]) {
+    if (cmd_seq[core_id].v != cmd_done[core_id].v) {
         return MULTICORE_ERR_BUSY;
     }
 
-    cmd_funcs[core_id] = (uint32_t)func;
-    cmd_args[core_id] = (uint32_t)arg;
+    cmd_funcs[core_id].v = (uint32_t)func;
+    cmd_args[core_id].v = (uint32_t)arg;
     dev_barrier();
 
     // Increment seq
-    cmd_seq[core_id]++;
+    cmd_seq[core_id].v++;
     dev_barrier();
 
-    dc_clean(&cmd_funcs[core_id]);
-    dc_clean(&cmd_args[core_id]);
-    dc_clean(&cmd_seq[core_id]);
+    if (!multicore_coherent) {
+        dc_clean(&cmd_funcs[core_id].v);
+        dc_clean(&cmd_args[core_id].v);
+        dc_clean(&cmd_seq[core_id].v);
+    } else {
+        asm volatile("dsb sy" ::: "memory");
+    }
 
     asm volatile("sev");
 
@@ -131,7 +139,7 @@ int multicore_check_done(unsigned core_id) {
 
     dev_barrier();
 
-    return cmd_seq[core_id] == cmd_done[core_id];
+    return cmd_seq[core_id].v == cmd_done[core_id].v;
 }
 
 //blocks until core has finished command
@@ -142,13 +150,17 @@ int multicore_wait(unsigned core_id) {
 
     dev_barrier();
 
-    uint32_t expected_seq = cmd_seq[core_id];
+    uint32_t expected_seq = cmd_seq[core_id].v;
 
     while (1) {
-        dev_barrier();
-        dc_inv(&cmd_done[core_id]);
+        if (!multicore_coherent) {
+            dev_barrier();
+            dc_inv(&cmd_done[core_id].v);
+        } else {
+            asm volatile("dsb sy" ::: "memory");
+        }
 
-        if (cmd_done[core_id] == expected_seq) {
+        if (cmd_done[core_id].v == expected_seq) {
             break;
         }
 
@@ -171,6 +183,14 @@ void multicore_dcache_clean_inv(void *addr, unsigned bytes) {
     uint32_t end = (uint32_t)addr + bytes;
     for (; p < end; p += 64)
         asm volatile("mcr p15, 0, %0, c7, c14, 1" : : "r"(p) : "memory");
+    dsb();
+}
+
+void multicore_dcache_inv(void *addr, unsigned bytes) {
+    uint32_t p   = (uint32_t)addr & ~(uint32_t)63;
+    uint32_t end = (uint32_t)addr + bytes;
+    for (; p < end; p += 64)
+        asm volatile("mcr p15, 0, %0, c7, c6, 1" : : "r"(p) : "memory");
     dsb();
 }
 

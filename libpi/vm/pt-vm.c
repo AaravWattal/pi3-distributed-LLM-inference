@@ -90,7 +90,7 @@ vm_map_sec(vm_pt_t *pt, uint32_t va, uint32_t pa, pin_t attr)
     pte->AP = attr.AP_perm & 0b11;
     pte->TEX = attr.mem_attr >> 2;
     pte->AP2 = attr.AP_perm >> 2;
-    pte->S = 0;
+    pte->S = 1;
     pte->nG = !attr.G;
     pte->super = 0;
     pte->NS = 0;
