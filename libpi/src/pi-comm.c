@@ -48,8 +48,9 @@ void comm_master_send_byte(uint8_t b) {
             gpio_set_off(COMM_PIN_MOSI);
 
         gpio_set_on(COMM_PIN_SCLK);
-        asm volatile("nop; nop; nop; nop;");
+        for (volatile int d = 0; d < 20; d++) {}
         gpio_set_off(COMM_PIN_SCLK);
+        for (volatile int d = 0; d < 20; d++) {}
     }
 }
 
@@ -57,10 +58,11 @@ uint8_t comm_master_recv_byte(void) {
     uint8_t b = 0;
     for (int i = 7; i >= 0; i--) {
         gpio_set_on(COMM_PIN_SCLK);
-        asm volatile("nop; nop; nop; nop;");
+        for (volatile int d = 0; d < 20; d++) {}
         if (gpio_read(COMM_PIN_MISO))
             b |= (1 << i);
         gpio_set_off(COMM_PIN_SCLK);
+        for (volatile int d = 0; d < 20; d++) {}
     }
     return b;
 }
