@@ -915,18 +915,24 @@ void generate_master(Transformer *transformer, Tokenizer *tokenizer, Sampler *sa
         memcpy(x, content_row, dim * sizeof(float));
 
         forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
+        printk("DBG: forward done pos=%d\n", pos);
 
         comm_wait_ready();
+        printk("DBG: worker ready, sending activation\n");
 
         uint32_t meta[3];
         meta[0] = (uint32_t)token;
         meta[1] = (uint32_t)pos;
         meta[2] = (uint32_t)(pos < num_prompt_tokens - 1 ? prompt_tokens[pos + 1] : 0xFFFFFFFF);
         comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
+        printk("DBG: activation sent\n");
         comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
+        printk("DBG: meta sent, waiting busy\n");
 
         comm_wait_busy();
+        printk("DBG: worker busy, waiting ready\n");
         comm_wait_ready();
+        delay_us(50);
 
         CommHeader hdr;
         uint32_t result[2];
@@ -1002,11 +1008,10 @@ void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
 
         int is_eos = (next == 1) ? 1 : 0;
 
-        comm_signal_ready();
-
         uint32_t result[2];
         result[0] = (uint32_t)next;
         result[1] = (uint32_t)is_eos;
+        comm_signal_ready();
         comm_send_msg(MSG_TOKEN, seq, (uint16_t)actual_pos, result, sizeof(result));
 
         if (is_eos) break;
