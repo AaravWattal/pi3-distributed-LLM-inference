@@ -33,6 +33,7 @@
 #define VFP 1
 #define CACHING 1
 #define MULTICORE 1
+#define MULTICORE_MATMUL 0
 #define TIMER_PROFILING 0
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
@@ -229,7 +230,7 @@ void softmax(float* x, int size) {
     }
 }
 
-#if MULTICORE
+#if MULTICORE && MULTICORE_MATMUL
 typedef struct {
     float *xout;
     float *x;
@@ -275,7 +276,7 @@ static void matmul_worker(void *varg) {
 #endif
 
 void matmul(float *xout, float *x, float *w, int n, int d) {
-#if MULTICORE
+#if MULTICORE && MULTICORE_MATMUL
     // split output rows evenly across all cores
     int chunk = (d + NUM_CORES - 1) / NUM_CORES;
     for (int c = 0; c < NUM_CORES; c++) {
@@ -286,16 +287,47 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
         matmul_args[c] = (MatmulArgs){ xout, x, w, n, ds, de };
     }
 
+    // Workers read x produced on core0; make sure dirty input lines are visible.
+    multicore_dcache_clean(x, (unsigned)n * sizeof(*x));
+
+    // Workers write disjoint xout ranges; invalidate those ranges on core0 first so
+    // stale lines cannot be written back later and clobber worker results.
+    for (int c = 1; c < NUM_CORES; c++) {
+        int ds = matmul_args[c].d_start;
+        int de = matmul_args[c].d_end;
+        if (de > ds) {
+            multicore_dcache_clean_inv(xout + ds, (unsigned)(de - ds) * sizeof(*xout));
+        }
+    }
+
+    // Workers run on different cores with private L1 caches; push args before waking them.
+    multicore_dcache_clean(matmul_args, sizeof(matmul_args));
+
     // dispatch cores
     for (int c = 1; c < NUM_CORES; c++) {
-        multicore_call_async(c, matmul_worker, &matmul_args[c]);
+        int status = multicore_call_async(c, matmul_worker, &matmul_args[c]);
+        if (status != MULTICORE_OK) {
+            panic("matmul: multicore_call_async(core=%d) failed: %d\n", c, status);
+        }
     }
 
     // core 0 workload
     matmul_worker(&matmul_args[0]);
 
     // wait for worker cores to finish
-    multicore_wait_all();
+    int wait_status = multicore_wait_all();
+    if (wait_status != MULTICORE_OK) {
+        panic("matmul: multicore_wait_all failed: %d\n", wait_status);
+    }
+
+    // Pull worker writes back before consumers read worker-owned xout ranges on core0.
+    for (int c = 1; c < NUM_CORES; c++) {
+        int ds = matmul_args[c].d_start;
+        int de = matmul_args[c].d_end;
+        if (de > ds) {
+            multicore_dcache_clean_inv(xout + ds, (unsigned)(de - ds) * sizeof(*xout));
+        }
+    }
 
 #else
     for (int i = 0; i < d; i++) {
