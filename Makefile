@@ -72,18 +72,28 @@ VM_OBJS = \
 	libpi/vm/your-mmu-asm.o \
 	libpi/vm/cache-support.o
 
+COMM_OBJS = \
+	libpi/src/pi-comm.o
+
 APP_OBJS_BASE = main.o libpi/start.o libpi/src/interrupts-asm.o $(VM_OBJS) $(LIBPI_COMMON)
 
 APP_OBJS = $(APP_OBJS_BASE) libpi/src/run.o $(FAT32_OBJS) $(MULTICORE_OBJS)
+# Distributed build adds the comm module
+APP_OBJS_DIST = $(APP_OBJS) $(COMM_OBJS)
+
 BOOT_OBJS = libpi/boot/boot-main.o libpi/boot/boot-start.o $(LIBPI_COMMON)
-ALL_OBJS  = $(APP_OBJS) $(BOOT_OBJS)
+ALL_OBJS  = $(APP_OBJS_DIST) $(BOOT_OBJS)
 
 DEPS     = $(MEMMAP) ./Makefile
 
 LIBUNIX_SRCS      = $(filter-out libunix/put-get.c libunix/pi-cat.c, $(wildcard libunix/*.c))
 LIBUNIX_HOST_OBJS = $(LIBUNIX_SRCS:.c=.host.o)
 
+# Default: single-board build (unchanged behavior)
 all: boot/kernel.img main.bin pi3-install
+
+# Distributed build: same binary, auto-detects role at boot via GPIO 7
+distributed: boot/kernel.img distributed.bin pi3-install
 
 $(ALL_OBJS): $(DEPS)
 
@@ -99,6 +109,15 @@ libpi/cstart.o: libpi/cstart.c $(DEPS)
 kernel.elf: $(APP_OBJS) $(DEPS)
 	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(APP_OBJS) -lgcc
 
+# Distributed ELF: adds -DPI_DISTRIBUTED and links comm module.
+# We rebuild run.o with the flag using a separate target.
+dist-run.o: libpi/src/run.c $(DEPS)
+	$(CC) $(CFLAGS) -DPI_DISTRIBUTED -c $< -o $@
+
+kernel-dist.elf: $(APP_OBJS_BASE) dist-run.o $(COMM_OBJS) $(FAT32_OBJS) $(MULTICORE_OBJS) $(DEPS)
+	$(CC) $(CFLAGS) -DPI_DISTRIBUTED -Wl,-T,$(MEMMAP) -o $@ \
+		$(APP_OBJS_BASE) dist-run.o $(COMM_OBJS) $(FAT32_OBJS) $(MULTICORE_OBJS) -lgcc
+
 bootloader.elf: $(BOOT_OBJS) $(DEPS)
 	$(CC) $(CFLAGS) -Wl,-T,$(MEMMAP) -o $@ $(BOOT_OBJS)
 
@@ -111,6 +130,9 @@ boot/kernel.img: bootloader.elf
 main.bin: kernel.elf
 	$(OCP) kernel.elf -O binary $@
 
+distributed.bin: kernel-dist.elf
+	$(OCP) kernel-dist.elf -O binary $@
+
 libunix/%.host.o: libunix/%.c
 	$(HOST_CC) $(HOST_CFLAGS) -c $< -o $@
 
@@ -120,7 +142,8 @@ pi3-install: $(LIBUNIX_HOST_OBJS)
 clean::
 	rm -f $(ALL_OBJS) $(LIBUNIX_HOST_OBJS) libunix/*.host.o \
 	      kernel.elf kernel.list main.bin \
+	      kernel-dist.elf distributed.bin dist-run.o \
 	      bootloader.elf boot/kernel.img pi3-install
 
-.PHONY: all clean
-.PRECIOUS: kernel.elf boot/kernel.img
+.PHONY: all clean distributed
+.PRECIOUS: kernel.elf kernel-dist.elf boot/kernel.img

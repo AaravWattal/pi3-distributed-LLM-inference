@@ -39,6 +39,13 @@
 #define TOKENIZER_PATH "T.BIN"
 #define STEPS 256
 
+#ifdef PI_DISTRIBUTED
+#include "pi-comm.h"
+#ifndef SPLIT_LAYER
+#define SPLIT_LAYER 3
+#endif
+#endif
+
 typedef struct {
     int dim; // transformer dimension
     int hidden_dim; // for ffn layers
@@ -309,17 +316,14 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
 #endif
 }
 
-float* forward(Transformer* transformer, int token, int pos) {
-
-    // a few convenience variables
+void forward_layers(Transformer* transformer, int pos, int l_start, int l_end, float *x) {
     Config* p = &transformer->config;
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
-    float *x = s->x;
     int dim = p->dim;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
-    int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
-    int hidden_dim =  p->hidden_dim;
+    int kv_mul = p->n_heads / p->n_kv_heads;
+    int hidden_dim = p->hidden_dim;
     int head_size = dim / p->n_heads;
     float head_size_inv_sqrt = 1.0f / sqrtf(head_size);
 
@@ -333,33 +337,23 @@ float* forward(Transformer* transformer, int token, int pos) {
         rope_sin[i / 2] = sinf(val);
     }
 
-    // copy the token embedding into x
-    float* content_row = w->token_embedding_table + token * dim;
-    memcpy(x, content_row, dim*sizeof(*x));
-
-    // forward all the layers
-    for(unsigned long long l = 0; l < p->n_layers; l++) {
-
-        // attention rmsnorm
+    for (int l = l_start; l < l_end; l++) {
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
 
-        // key and value point to the kv cache
-        int loff = l * p->seq_len * kv_dim; // kv cache layer offset for convenience
+        int loff = l * p->seq_len * kv_dim;
         s->k = s->key_cache + loff + pos * kv_dim;
         s->v = s->value_cache + loff + pos * kv_dim;
 
-        // qkv matmuls for this position
         matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
         matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
         matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
 
-        // RoPE relative positional encoding: complex-valued rotate q and k in each head
         for (int i = 0; i < dim; i+=2) {
             float fcr = rope_cos[i / 2];
             float fci = rope_sin[i / 2];
-            int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
+            int rotn = i < kv_dim ? 2 : 1;
             for (int v = 0; v < rotn; v++) {
-                float* vec = v == 0 ? s->q : s->k; // the vector to rotate (query or key)
+                float* vec = v == 0 ? s->q : s->k;
                 float v0 = vec[i];
                 float v1 = vec[i+1];
                 vec[i]   = v0 * fcr - v1 * fci;
@@ -367,84 +361,72 @@ float* forward(Transformer* transformer, int token, int pos) {
             }
         }
 
-        // multihead attention. iterate over all heads
         int h;
         for (h = 0; h < p->n_heads; h++) {
-            // get the query vector for this head
             float* q = s->q + h * head_size;
-            // attention scores for this head
             float* att = s->att + h * p->seq_len;
-            // iterate over all timesteps, including the current one
             for (int t = 0; t <= pos; t++) {
-                // get the key vector for this head and at this timestep
                 float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-                // calculate the attention score as the dot product of q and k
                 float score = 0.0f;
                 for (int i = 0; i < head_size; i++) {
                     score += q[i] * k[i];
                 }
                 score *= head_size_inv_sqrt;
-                // save the score to the attention buffer
                 att[t] = score;
             }
 
-            // softmax the scores to get attention weights, from 0..pos inclusively
             softmax(att, pos + 1);
 
-            // weighted sum of the values, store back into xb
             float* xb = s->xb + h * head_size;
             memset(xb, 0, head_size * sizeof(float));
             for (int t = 0; t <= pos; t++) {
-                // get the value vector for this head and at this timestep
                 float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-                // get the attention weight for this timestep
                 float a = att[t];
-                // accumulate the weighted value into xb
                 for (int i = 0; i < head_size; i++) {
                     xb[i] += a * v[i];
                 }
             }
         }
 
-        // final matmul to get the output of the attention
         matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
 
-        // residual connection back into x
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb2[i];
         }
 
-        // ffn rmsnorm
         rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
 
-        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
-        // first calculate self.w1(x) and self.w3(x)
         matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
         matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
 
-        // SwiGLU non-linearity
         for (int i = 0; i < hidden_dim; i++) {
             float val = s->hb[i];
-            // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
             val *= (1.0f / (1.0f + expf(-val)));
-            // elementwise multiply with w3(x)
             val *= s->hb2[i];
             s->hb[i] = val;
         }
 
-        // final matmul to get the output of the ffn
         matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
 
-        // residual connection
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb[i];
         }
     }
+}
 
-    // final rmsnorm
+float* forward(Transformer* transformer, int token, int pos) {
+    Config* p = &transformer->config;
+    TransformerWeights* w = &transformer->weights;
+    RunState* s = &transformer->state;
+    float *x = s->x;
+    int dim = p->dim;
+
+    float* content_row = w->token_embedding_table + token * dim;
+    memcpy(x, content_row, dim*sizeof(*x));
+
+    forward_layers(transformer, pos, 0, p->n_layers, x);
+
     rmsnorm(x, x, w->rms_final_weight, dim);
-
-    // classifier into logits
     matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
     return s->logits;
 }
@@ -903,6 +885,136 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 }
 
 // ----------------------------------------------------------------------------
+// Distributed inference: master and worker generation loops
+#ifdef PI_DISTRIBUTED
+
+void generate_master(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
+                     char *prompt, int steps) {
+    (void)sampler;
+    char *empty_prompt = "";
+    if (prompt == NULL) { prompt = empty_prompt; }
+    Config* p = &transformer->config;
+    int dim = p->dim;
+
+    int num_prompt_tokens = 0;
+    int* prompt_tokens = (int*)kmalloc((strlen(prompt)+3) * sizeof(int));
+    encode(tokenizer, prompt, 1, 0, prompt_tokens, &num_prompt_tokens);
+    if (num_prompt_tokens < 1) {
+        panic("something is wrong, expected at least 1 prompt token\n");
+    }
+
+    long start = 0;
+    int next;
+    int token = prompt_tokens[0];
+    int pos = 0;
+    uint16_t seq = 0;
+
+    while (pos < steps) {
+        float *x = transformer->state.x;
+        float* content_row = transformer->weights.token_embedding_table + token * dim;
+        memcpy(x, content_row, dim * sizeof(float));
+
+        forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
+
+        uint32_t meta[3];
+        meta[0] = (uint32_t)token;
+        meta[1] = (uint32_t)pos;
+        meta[2] = (uint32_t)(pos < num_prompt_tokens - 1 ? prompt_tokens[pos + 1] : 0xFFFFFFFF);
+        comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
+        comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
+
+        comm_wait_ready();
+
+        CommHeader hdr;
+        uint32_t result[2];
+        int rc = comm_recv_msg(&hdr, result, sizeof(result));
+        if (rc != 0)
+            panic("master: recv failed rc=%d\n", rc);
+        next = (int)result[0];
+        int is_eos = (int)result[1];
+
+        pos++;
+
+        if (is_eos || next == 1) { break; }
+
+        char* piece = decode(tokenizer, token, next);
+        safe_printf(piece);
+        token = next;
+
+        if (start == 0) { start = time_in_ms(); }
+        seq++;
+    }
+    printk("\n");
+
+    if (pos > 1) {
+        long end = time_in_ms();
+        printk("achieved tok/s: ");
+        print_float((pos-1) / (double)(end-start)*1000);
+        printk("\n");
+    }
+
+    free(prompt_tokens);
+}
+
+void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
+                     Sampler *sampler, int steps) {
+    (void)tokenizer;
+    Config* p = &transformer->config;
+    int dim = p->dim;
+    float *x = transformer->state.x;
+
+    int prev_token = 0;
+    uint16_t seq = 0;
+
+    for (int pos = 0; pos < steps; pos++) {
+        comm_signal_busy();
+
+        CommHeader hdr;
+        int rc = comm_recv_msg(&hdr, x, dim * sizeof(float));
+        if (rc != 0)
+            panic("worker: recv activation failed rc=%d\n", rc);
+
+        uint32_t meta[3];
+        rc = comm_recv_msg(&hdr, meta, sizeof(meta));
+        if (rc != 0)
+            panic("worker: recv meta failed rc=%d\n", rc);
+
+        int token = (int)meta[0];
+        int actual_pos = (int)meta[1];
+        int forced_next = (int)meta[2];
+
+        forward_layers(transformer, actual_pos, SPLIT_LAYER, p->n_layers, x);
+
+        rmsnorm(x, x, transformer->weights.rms_final_weight, dim);
+        matmul(transformer->state.logits, x, transformer->weights.wcls, dim, p->vocab_size);
+
+        int next;
+        if (forced_next != (int)0xFFFFFFFF) {
+            next = forced_next;
+        } else {
+            next = sample(sampler, transformer->state.logits);
+        }
+
+        int is_eos = (next == 1) ? 1 : 0;
+
+        comm_signal_ready();
+
+        uint32_t result[2];
+        result[0] = (uint32_t)next;
+        result[1] = (uint32_t)is_eos;
+        comm_send_msg(MSG_TOKEN, seq, (uint16_t)actual_pos, result, sizeof(result));
+
+        if (is_eos) break;
+
+        prev_token = token;
+        seq++;
+    }
+    (void)prev_token;
+}
+
+#endif // PI_DISTRIBUTED
+
+// ----------------------------------------------------------------------------
 // CLI, include only if not testing
 #ifndef TESTING
 
@@ -1125,18 +1237,35 @@ void notmain_llama_inference(void) {
     printk("dcache flush: done\n");
     #endif
 
-    // run!
+#ifdef PI_DISTRIBUTED
+    {
+        int role = comm_is_master();
+        printk("PI_DISTRIBUTED: role = %s\n", role ? "MASTER" : "WORKER");
+        comm_init(role);
+        comm_handshake(role);
+
+        if (role) {
+            printk("Generating (master, layers 0-%d)...\n", SPLIT_LAYER - 1);
+            generate_master(&transformer, &tokenizer, &sampler, prompt, steps);
+        } else {
+            printk("Running (worker, layers %d-%d + head)...\n",
+                   SPLIT_LAYER, transformer.config.n_layers - 1);
+            generate_worker(&transformer, &tokenizer, &sampler, steps);
+        }
+    }
+#else
     if (strcmp(mode, "generate") == 0) {
         printk("Generating...\n");
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
         #if TIMER_PROFILING
         gprof_dump(10);
         #endif
-    } 
+    }
     else {
         panic("unknown mode: %s\n", mode);
         // error_usage();
     }
+#endif
     clean_reboot();
 }
 #endif
