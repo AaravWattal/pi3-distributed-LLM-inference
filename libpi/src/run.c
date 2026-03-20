@@ -195,38 +195,59 @@ void build_transformer(Transformer *t, char* checkpoint_path) {
 }
 
 void rmsnorm(float* o, float* x, float* weight, int size) {
-    // calculate sum of squares
-    float ss = 0.0f;
-    for (int j = 0; j < size; j++) {
-        ss += x[j] * x[j];
+    float32x4_t ss_vec = vdupq_n_f32(0.0f);
+    int j = 0;
+    for (; j <= size - 4; j += 4) {
+        float32x4_t xv = vld1q_f32(x + j);
+        ss_vec = vmlaq_f32(ss_vec, xv, xv);
     }
+    float32x2_t ss2 = vadd_f32(vget_high_f32(ss_vec), vget_low_f32(ss_vec));
+    ss2 = vpadd_f32(ss2, ss2);
+    float ss = vget_lane_f32(ss2, 0);
+    for (; j < size; j++)
+        ss += x[j] * x[j];
     ss /= size;
     ss += 1e-5f;
     ss = 1.0f / sqrtf(ss);
-    // normalize and scale
-    for (int j = 0; j < size; j++) {
+
+    float32x4_t ss_broad = vdupq_n_f32(ss);
+    j = 0;
+    for (; j <= size - 4; j += 4)
+        vst1q_f32(o + j, vmulq_f32(vld1q_f32(weight + j), vmulq_f32(ss_broad, vld1q_f32(x + j))));
+    for (; j < size; j++)
         o[j] = weight[j] * (ss * x[j]);
-    }
 }
 
 void softmax(float* x, int size) {
-    // find max value (for numerical stability)
-    float max_val = x[0];
-    for (int i = 1; i < size; i++) {
-        if (x[i] > max_val) {
-            max_val = x[i];
-        }
+    int i = 0;
+    float max_val;
+    if (size >= 4) {
+        float32x4_t max_vec = vld1q_f32(x);
+        for (i = 4; i <= size - 4; i += 4)
+            max_vec = vmaxq_f32(max_vec, vld1q_f32(x + i));
+        float32x2_t m2 = vpmax_f32(vget_high_f32(max_vec), vget_low_f32(max_vec));
+        m2 = vpmax_f32(m2, m2);
+        max_val = vget_lane_f32(m2, 0);
     }
-    // exp and sum
+    else {
+        max_val = x[0];
+        i = 1;
+    }
+    for (; i < size; i++)
+        if (x[i] > max_val) max_val = x[i];
+
     float sum = 0.0f;
-    for (int i = 0; i < size; i++) {
+    for (i = 0; i < size; i++) {
         x[i] = expf(x[i] - max_val);
         sum += x[i];
     }
-    // normalize
-    for (int i = 0; i < size; i++) {
-        x[i] /= sum;
-    }
+
+    float inv_sum = 1.0f / sum;
+    float32x4_t inv_sum_vec = vdupq_n_f32(inv_sum);
+    for (i = 0; i <= size - 4; i += 4)
+        vst1q_f32(x + i, vmulq_f32(vld1q_f32(x + i), inv_sum_vec));
+    for (; i < size; i++)
+        x[i] *= inv_sum;
 }
 
 #if MULTICORE
@@ -357,66 +378,65 @@ float* forward(Transformer* transformer, int token, int pos) {
         matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
         matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
 
-        // RoPE relative positional encoding: complex-valued rotate q and k in each head
-        for (int i = 0; i < dim; i+=2) {
-            float fcr = rope_cos[i / 2];
-            float fci = rope_sin[i / 2];
-            int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
-            for (int v = 0; v < rotn; v++) {
-                float* vec = v == 0 ? s->q : s->k; // the vector to rotate (query or key)
-                float v0 = vec[i];
-                float v1 = vec[i+1];
-                vec[i]   = v0 * fcr - v1 * fci;
-                vec[i+1] = v0 * fci + v1 * fcr;
-            }
+        // RoPE: rotate q and k
+        for (int i = 0; i < kv_dim; i += 2) {
+            float fcr = rope_cos[i / 2], fci = rope_sin[i / 2];
+            float q0 = s->q[i], q1 = s->q[i+1];
+            s->q[i]   = q0 * fcr - q1 * fci;
+            s->q[i+1] = q0 * fci + q1 * fcr;
+            float k0 = s->k[i], k1 = s->k[i+1];
+            s->k[i]   = k0 * fcr - k1 * fci;
+            s->k[i+1] = k0 * fci + k1 * fcr;
+        }
+        for (int i = kv_dim; i < dim; i += 2) {
+            float fcr = rope_cos[i / 2], fci = rope_sin[i / 2];
+            float q0 = s->q[i], q1 = s->q[i+1];
+            s->q[i]   = q0 * fcr - q1 * fci;
+            s->q[i+1] = q0 * fci + q1 * fcr;
         }
 
-        // multihead attention. iterate over all heads
         int h;
         for (h = 0; h < p->n_heads; h++) {
-            // get the query vector for this head
             float* q = s->q + h * head_size;
-            // attention scores for this head
             float* att = s->att + h * p->seq_len;
-            // iterate over all timesteps, including the current one
+
             for (int t = 0; t <= pos; t++) {
-                // get the key vector for this head and at this timestep
                 float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-                // calculate the attention score as the dot product of q and k
-                float score = 0.0f;
-                for (int i = 0; i < head_size; i++) {
+                float32x4_t acc = vdupq_n_f32(0.0f);
+                int i = 0;
+                for (; i <= head_size - 4; i += 4)
+                    acc = vmlaq_f32(acc, vld1q_f32(q + i), vld1q_f32(k + i));
+                float32x2_t s2 = vadd_f32(vget_high_f32(acc), vget_low_f32(acc));
+                s2 = vpadd_f32(s2, s2);
+                float score = vget_lane_f32(s2, 0);
+                for (; i < head_size; i++)
                     score += q[i] * k[i];
-                }
-                score *= head_size_inv_sqrt;
-                // save the score to the attention buffer
-                att[t] = score;
+                att[t] = score * head_size_inv_sqrt;
             }
 
-            // softmax the scores to get attention weights, from 0..pos inclusively
             softmax(att, pos + 1);
 
-            // weighted sum of the values, store back into xb
             float* xb = s->xb + h * head_size;
             memset(xb, 0, head_size * sizeof(float));
             for (int t = 0; t <= pos; t++) {
-                // get the value vector for this head and at this timestep
                 float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-                // get the attention weight for this timestep
                 float a = att[t];
-                // accumulate the weighted value into xb
-                for (int i = 0; i < head_size; i++) {
+                float32x4_t a_vec = vdupq_n_f32(a);
+                int i = 0;
+                for (; i <= head_size - 4; i += 4)
+                    vst1q_f32(xb + i, vmlaq_f32(vld1q_f32(xb + i), a_vec, vld1q_f32(v + i)));
+                for (; i < head_size; i++)
                     xb[i] += a * v[i];
-                }
             }
         }
 
         // final matmul to get the output of the attention
         matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
 
-        // residual connection back into x
-        for (int i = 0; i < dim; i++) {
+        for (int i = 0; i <= dim - 4; i += 4)
+            vst1q_f32(x + i, vaddq_f32(vld1q_f32(x + i), vld1q_f32(s->xb2 + i)));
+        for (int i = (dim / 4) * 4; i < dim; i++)
             x[i] += s->xb2[i];
-        }
 
         // ffn rmsnorm
         rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
@@ -426,23 +446,19 @@ float* forward(Transformer* transformer, int token, int pos) {
         matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
         matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
 
-        // SwiGLU non-linearity
         for (int i = 0; i < hidden_dim; i++) {
             float val = s->hb[i];
-            // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
             val *= (1.0f / (1.0f + expf(-val)));
-            // elementwise multiply with w3(x)
-            val *= s->hb2[i];
-            s->hb[i] = val;
+            s->hb[i] = val * s->hb2[i];
         }
 
         // final matmul to get the output of the ffn
         matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
 
-        // residual connection
-        for (int i = 0; i < dim; i++) {
+        for (int i = 0; i <= dim - 4; i += 4)
+            vst1q_f32(x + i, vaddq_f32(vld1q_f32(x + i), vld1q_f32(s->xb + i)));
+        for (int i = (dim / 4) * 4; i < dim; i++)
             x[i] += s->xb[i];
-        }
     }
 
     // final rmsnorm
