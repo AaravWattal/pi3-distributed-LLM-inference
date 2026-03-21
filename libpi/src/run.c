@@ -33,18 +33,10 @@
 #define VFP 1
 #define CACHING 1
 #define MULTICORE 1
-#define MULTICORE_MATMUL 1
 #define TIMER_PROFILING 0
 #define CHECKPOINT_PATH "MODEL.BIN"
 #define TOKENIZER_PATH "T.BIN"
 #define STEPS 256
-
-#ifdef PI_DISTRIBUTED
-#include "pi-comm.h"
-#ifndef SPLIT_LAYER
-#define SPLIT_LAYER 3
-#endif
-#endif
 
 typedef struct {
     int dim; // transformer dimension
@@ -203,41 +195,62 @@ void build_transformer(Transformer *t, char* checkpoint_path) {
 }
 
 void rmsnorm(float* o, float* x, float* weight, int size) {
-    // calculate sum of squares
-    float ss = 0.0f;
-    for (int j = 0; j < size; j++) {
-        ss += x[j] * x[j];
+    float32x4_t ss_vec = vdupq_n_f32(0.0f);
+    int j = 0;
+    for (; j <= size - 4; j += 4) {
+        float32x4_t xv = vld1q_f32(x + j);
+        ss_vec = vmlaq_f32(ss_vec, xv, xv);
     }
+    float32x2_t ss2 = vadd_f32(vget_high_f32(ss_vec), vget_low_f32(ss_vec));
+    ss2 = vpadd_f32(ss2, ss2);
+    float ss = vget_lane_f32(ss2, 0);
+    for (; j < size; j++)
+        ss += x[j] * x[j];
     ss /= size;
     ss += 1e-5f;
     ss = 1.0f / sqrtf(ss);
-    // normalize and scale
-    for (int j = 0; j < size; j++) {
+
+    float32x4_t ss_broad = vdupq_n_f32(ss);
+    j = 0;
+    for (; j <= size - 4; j += 4)
+        vst1q_f32(o + j, vmulq_f32(vld1q_f32(weight + j), vmulq_f32(ss_broad, vld1q_f32(x + j))));
+    for (; j < size; j++)
         o[j] = weight[j] * (ss * x[j]);
-    }
 }
 
 void softmax(float* x, int size) {
-    // find max value (for numerical stability)
-    float max_val = x[0];
-    for (int i = 1; i < size; i++) {
-        if (x[i] > max_val) {
-            max_val = x[i];
-        }
+    int i = 0;
+    float max_val;
+    if (size >= 4) {
+        float32x4_t max_vec = vld1q_f32(x);
+        for (i = 4; i <= size - 4; i += 4)
+            max_vec = vmaxq_f32(max_vec, vld1q_f32(x + i));
+        float32x2_t m2 = vpmax_f32(vget_high_f32(max_vec), vget_low_f32(max_vec));
+        m2 = vpmax_f32(m2, m2);
+        max_val = vget_lane_f32(m2, 0);
     }
-    // exp and sum
+    else {
+        max_val = x[0];
+        i = 1;
+    }
+    for (; i < size; i++)
+        if (x[i] > max_val) max_val = x[i];
+
     float sum = 0.0f;
-    for (int i = 0; i < size; i++) {
+    for (i = 0; i < size; i++) {
         x[i] = expf(x[i] - max_val);
         sum += x[i];
     }
-    // normalize
-    for (int i = 0; i < size; i++) {
-        x[i] /= sum;
-    }
+
+    float inv_sum = 1.0f / sum;
+    float32x4_t inv_sum_vec = vdupq_n_f32(inv_sum);
+    for (i = 0; i <= size - 4; i += 4)
+        vst1q_f32(x + i, vmulq_f32(vld1q_f32(x + i), inv_sum_vec));
+    for (; i < size; i++)
+        x[i] *= inv_sum;
 }
 
-#if MULTICORE && MULTICORE_MATMUL
+#if MULTICORE
 typedef struct {
     float *xout;
     float *x;
@@ -283,9 +296,9 @@ static void matmul_worker(void *varg) {
 #endif
 
 void matmul(float *xout, float *x, float *w, int n, int d) {
-#if MULTICORE && MULTICORE_MATMUL
+#if MULTICORE
+    // split output rows evenly across all cores
     int chunk = (d + NUM_CORES - 1) / NUM_CORES;
-    chunk = (chunk + 15) & ~15;
     for (int c = 0; c < NUM_CORES; c++) {
         int ds = c * chunk;
         int de = ds + chunk;
@@ -294,11 +307,16 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
         matmul_args[c] = (MatmulArgs){ xout, x, w, n, ds, de };
     }
 
-    matmul_worker(&matmul_args[0]);
+    // dispatch cores
     for (int c = 1; c < NUM_CORES; c++) {
-        if (matmul_args[c].d_start < matmul_args[c].d_end)
-            multicore_call(c, matmul_worker, &matmul_args[c]);
+        multicore_call_async(c, matmul_worker, &matmul_args[c]);
     }
+
+    // core 0 workload
+    matmul_worker(&matmul_args[0]);
+
+    // wait for worker cores to finish
+    multicore_wait_all();
 
 #else
     for (int i = 0; i < d; i++) {
@@ -316,14 +334,17 @@ void matmul(float *xout, float *x, float *w, int n, int d) {
 #endif
 }
 
-void forward_layers(Transformer* transformer, int pos, int l_start, int l_end, float *x) {
+float* forward(Transformer* transformer, int token, int pos) {
+
+    // a few convenience variables
     Config* p = &transformer->config;
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
+    float *x = s->x;
     int dim = p->dim;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
-    int kv_mul = p->n_heads / p->n_kv_heads;
-    int hidden_dim = p->hidden_dim;
+    int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
+    int hidden_dim =  p->hidden_dim;
     int head_size = dim / p->n_heads;
     float head_size_inv_sqrt = 1.0f / sqrtf(head_size);
 
@@ -337,42 +358,60 @@ void forward_layers(Transformer* transformer, int pos, int l_start, int l_end, f
         rope_sin[i / 2] = sinf(val);
     }
 
-    for (int l = l_start; l < l_end; l++) {
+    // copy the token embedding into x
+    float* content_row = w->token_embedding_table + token * dim;
+    memcpy(x, content_row, dim*sizeof(*x));
+
+    // forward all the layers
+    for(unsigned long long l = 0; l < p->n_layers; l++) {
+
+        // attention rmsnorm
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
 
-        int loff = l * p->seq_len * kv_dim;
+        // key and value point to the kv cache
+        int loff = l * p->seq_len * kv_dim; // kv cache layer offset for convenience
         s->k = s->key_cache + loff + pos * kv_dim;
         s->v = s->value_cache + loff + pos * kv_dim;
 
+        // qkv matmuls for this position
         matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
         matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
         matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
 
-        for (int i = 0; i < dim; i+=2) {
-            float fcr = rope_cos[i / 2];
-            float fci = rope_sin[i / 2];
-            int rotn = i < kv_dim ? 2 : 1;
-            for (int v = 0; v < rotn; v++) {
-                float* vec = v == 0 ? s->q : s->k;
-                float v0 = vec[i];
-                float v1 = vec[i+1];
-                vec[i]   = v0 * fcr - v1 * fci;
-                vec[i+1] = v0 * fci + v1 * fcr;
-            }
+        // RoPE: rotate q and k
+        for (int i = 0; i < kv_dim; i += 2) {
+            float fcr = rope_cos[i / 2], fci = rope_sin[i / 2];
+            float q0 = s->q[i], q1 = s->q[i+1];
+            s->q[i]   = q0 * fcr - q1 * fci;
+            s->q[i+1] = q0 * fci + q1 * fcr;
+            float k0 = s->k[i], k1 = s->k[i+1];
+            s->k[i]   = k0 * fcr - k1 * fci;
+            s->k[i+1] = k0 * fci + k1 * fcr;
+        }
+        for (int i = kv_dim; i < dim; i += 2) {
+            float fcr = rope_cos[i / 2], fci = rope_sin[i / 2];
+            float q0 = s->q[i], q1 = s->q[i+1];
+            s->q[i]   = q0 * fcr - q1 * fci;
+            s->q[i+1] = q0 * fci + q1 * fcr;
         }
 
         int h;
         for (h = 0; h < p->n_heads; h++) {
             float* q = s->q + h * head_size;
             float* att = s->att + h * p->seq_len;
+
             for (int t = 0; t <= pos; t++) {
                 float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
-                float score = 0.0f;
-                for (int i = 0; i < head_size; i++) {
+                float32x4_t acc = vdupq_n_f32(0.0f);
+                int i = 0;
+                for (; i <= head_size - 4; i += 4)
+                    acc = vmlaq_f32(acc, vld1q_f32(q + i), vld1q_f32(k + i));
+                float32x2_t s2 = vadd_f32(vget_high_f32(acc), vget_low_f32(acc));
+                s2 = vpadd_f32(s2, s2);
+                float score = vget_lane_f32(s2, 0);
+                for (; i < head_size; i++)
                     score += q[i] * k[i];
-                }
-                score *= head_size_inv_sqrt;
-                att[t] = score;
+                att[t] = score * head_size_inv_sqrt;
             }
 
             softmax(att, pos + 1);
@@ -382,51 +421,50 @@ void forward_layers(Transformer* transformer, int pos, int l_start, int l_end, f
             for (int t = 0; t <= pos; t++) {
                 float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
                 float a = att[t];
-                for (int i = 0; i < head_size; i++) {
+                float32x4_t a_vec = vdupq_n_f32(a);
+                int i = 0;
+                for (; i <= head_size - 4; i += 4)
+                    vst1q_f32(xb + i, vmlaq_f32(vld1q_f32(xb + i), a_vec, vld1q_f32(v + i)));
+                for (; i < head_size; i++)
                     xb[i] += a * v[i];
-                }
             }
         }
 
+        // final matmul to get the output of the attention
         matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
 
-        for (int i = 0; i < dim; i++) {
+        for (int i = 0; i <= dim - 4; i += 4)
+            vst1q_f32(x + i, vaddq_f32(vld1q_f32(x + i), vld1q_f32(s->xb2 + i)));
+        for (int i = (dim / 4) * 4; i < dim; i++)
             x[i] += s->xb2[i];
-        }
 
+        // ffn rmsnorm
         rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
 
+        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+        // first calculate self.w1(x) and self.w3(x)
         matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
         matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
 
         for (int i = 0; i < hidden_dim; i++) {
             float val = s->hb[i];
             val *= (1.0f / (1.0f + expf(-val)));
-            val *= s->hb2[i];
-            s->hb[i] = val;
+            s->hb[i] = val * s->hb2[i];
         }
 
+        // final matmul to get the output of the ffn
         matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
 
-        for (int i = 0; i < dim; i++) {
+        for (int i = 0; i <= dim - 4; i += 4)
+            vst1q_f32(x + i, vaddq_f32(vld1q_f32(x + i), vld1q_f32(s->xb + i)));
+        for (int i = (dim / 4) * 4; i < dim; i++)
             x[i] += s->xb[i];
-        }
     }
-}
 
-float* forward(Transformer* transformer, int token, int pos) {
-    Config* p = &transformer->config;
-    TransformerWeights* w = &transformer->weights;
-    RunState* s = &transformer->state;
-    float *x = s->x;
-    int dim = p->dim;
-
-    float* content_row = w->token_embedding_table + token * dim;
-    memcpy(x, content_row, dim*sizeof(*x));
-
-    forward_layers(transformer, pos, 0, p->n_layers, x);
-
+    // final rmsnorm
     rmsnorm(x, x, w->rms_final_weight, dim);
+
+    // classifier into logits
     matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
     return s->logits;
 }
@@ -885,166 +923,6 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 }
 
 // ----------------------------------------------------------------------------
-// Distributed inference: master and worker generation loops
-#ifdef PI_DISTRIBUTED
-
-void generate_master(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler,
-                     char *prompt, int steps) {
-    (void)sampler;
-    char *empty_prompt = "";
-    if (prompt == NULL) { prompt = empty_prompt; }
-    Config* p = &transformer->config;
-    int dim = p->dim;
-
-    int num_prompt_tokens = 0;
-    int* prompt_tokens = (int*)kmalloc((strlen(prompt)+3) * sizeof(int));
-    encode(tokenizer, prompt, 1, 0, prompt_tokens, &num_prompt_tokens);
-    if (num_prompt_tokens < 1) {
-        panic("something is wrong, expected at least 1 prompt token\n");
-    }
-
-    long start = 0;
-    int next;
-    int token = prompt_tokens[0];
-    int pos = 0;
-    uint16_t seq = 0;
-
-    printk("prefill: %d prompt tokens\n", num_prompt_tokens);
-    while (pos < num_prompt_tokens - 1) {
-        float *x = transformer->state.x;
-        float* content_row = transformer->weights.token_embedding_table + token * dim;
-        memcpy(x, content_row, dim * sizeof(float));
-
-        forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
-        printk("prefill pos=%d done\n", pos);
-
-        comm_wait_ready();
-
-        uint32_t meta[3];
-        meta[0] = (uint32_t)token;
-        meta[1] = (uint32_t)pos;
-        meta[2] = (uint32_t)prompt_tokens[pos + 1];
-        comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
-        comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
-
-        comm_wait_busy();
-
-        token = prompt_tokens[pos + 1];
-        pos++;
-        seq++;
-    }
-
-    printk("generation phase, pos=%d\n", pos);
-    while (pos < steps) {
-        float *x = transformer->state.x;
-        float* content_row = transformer->weights.token_embedding_table + token * dim;
-        memcpy(x, content_row, dim * sizeof(float));
-
-        forward_layers(transformer, pos, 0, SPLIT_LAYER, x);
-        printk("gen pos=%d fwd done\n", pos);
-
-        comm_wait_ready();
-        printk("gen pos=%d ready\n", pos);
-
-        uint32_t meta[3];
-        meta[0] = (uint32_t)token;
-        meta[1] = (uint32_t)pos;
-        meta[2] = (uint32_t)0xFFFFFFFF;
-        comm_send_msg(MSG_ACTIVATION, seq, (uint16_t)pos, x, dim * sizeof(float));
-        printk("gen pos=%d act sent\n", pos);
-        comm_send_msg(MSG_TOKEN, seq, (uint16_t)pos, meta, sizeof(meta));
-        printk("gen pos=%d meta sent\n", pos);
-
-        comm_wait_busy();
-        printk("gen pos=%d busy\n", pos);
-        comm_wait_ready();
-        printk("gen pos=%d ready2\n", pos);
-        delay_us(50);
-
-        CommHeader hdr;
-        uint32_t result[2];
-        int rc = comm_recv_msg(&hdr, result, sizeof(result));
-        if (rc != 0)
-            panic("master: recv failed rc=%d\n", rc);
-        next = (int)result[0];
-        int is_eos = (int)result[1];
-
-        pos++;
-
-        if (is_eos || next == 1) { break; }
-
-        char* piece = decode(tokenizer, token, next);
-        safe_printf(piece);
-        token = next;
-
-        if (start == 0) { start = time_in_ms(); }
-        seq++;
-    }
-    printk("\n");
-
-    if (pos > 1) {
-        long end = time_in_ms();
-        printk("achieved tok/s: ");
-        print_float((pos-1) / (double)(end-start)*1000);
-        printk("\n");
-    }
-
-    free(prompt_tokens);
-}
-
-void generate_worker(Transformer *transformer, Tokenizer *tokenizer,
-                     Sampler *sampler, int steps) {
-    (void)tokenizer;
-    Config* p = &transformer->config;
-    int dim = p->dim;
-    float *x = transformer->state.x;
-    uint16_t seq = 0;
-
-    for (int pos = 0; pos < steps; pos++) {
-        comm_signal_ready();
-
-        CommHeader hdr;
-        int rc = comm_recv_msg(&hdr, x, dim * sizeof(float));
-        if (rc != 0)
-            panic("worker: recv activation failed rc=%d\n", rc);
-
-        uint32_t meta[3];
-        rc = comm_recv_msg(&hdr, meta, sizeof(meta));
-        if (rc != 0)
-            panic("worker: recv meta failed rc=%d\n", rc);
-
-        comm_signal_busy();
-
-        int actual_pos = (int)meta[1];
-        int forced_next = (int)meta[2];
-
-        forward_layers(transformer, actual_pos, SPLIT_LAYER, p->n_layers, x);
-
-        if (forced_next != (int)0xFFFFFFFF) {
-            seq++;
-            continue;
-        }
-
-        rmsnorm(x, x, transformer->weights.rms_final_weight, dim);
-        matmul(transformer->state.logits, x, transformer->weights.wcls, dim, p->vocab_size);
-
-        int next = sample(sampler, transformer->state.logits);
-        int is_eos = (next == 1) ? 1 : 0;
-
-        uint32_t result[2];
-        result[0] = (uint32_t)next;
-        result[1] = (uint32_t)is_eos;
-        comm_signal_ready();
-        comm_send_msg(MSG_TOKEN, seq, (uint16_t)actual_pos, result, sizeof(result));
-
-        if (is_eos) break;
-        seq++;
-    }
-}
-
-#endif // PI_DISTRIBUTED
-
-// ----------------------------------------------------------------------------
 // CLI, include only if not testing
 #ifndef TESTING
 
@@ -1258,44 +1136,21 @@ void notmain_llama_inference(void) {
     }
     #endif
 
-    multicore_coherent = 1;
     printk("setup_vm: done for all cores\n");
-
-    extern void dcache_clean_inv_by_sw(void);
-    dcache_clean_inv_by_sw();
-    dsb();
-    printk("dcache flush: done\n");
     #endif
 
-#ifdef PI_DISTRIBUTED
-    {
-        int role = comm_is_master();
-        printk("PI_DISTRIBUTED: role = %s\n", role ? "MASTER" : "WORKER");
-        comm_init(role);
-        comm_handshake(role);
-
-        if (role) {
-            printk("Generating (master, layers 0-%d)...\n", SPLIT_LAYER - 1);
-            generate_master(&transformer, &tokenizer, &sampler, prompt, steps);
-        } else {
-            printk("Running (worker, layers %d-%d + head)...\n",
-                   SPLIT_LAYER, transformer.config.n_layers - 1);
-            generate_worker(&transformer, &tokenizer, &sampler, steps);
-        }
-    }
-#else
+    // run!
     if (strcmp(mode, "generate") == 0) {
         printk("Generating...\n");
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
         #if TIMER_PROFILING
         gprof_dump(10);
         #endif
-    }
+    } 
     else {
         panic("unknown mode: %s\n", mode);
         // error_usage();
     }
-#endif
     clean_reboot();
 }
 #endif
